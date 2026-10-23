@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAIProvider, GenerateTurnRequest } from '@/lib/ai';
+import { getAIProvider, GenerateTurnRequest, isTrustedEndpoint } from '@/lib/ai';
 
 export async function POST(request: NextRequest) {
   try {
@@ -48,6 +48,13 @@ export async function POST(request: NextRequest) {
       endpoint: body.endpoint,
       timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : 45000,
     };
+
+    if (payload.endpoint && !isTrustedEndpoint(payload.endpoint)) {
+      return NextResponse.json(
+        { error: 'Untrusted AI endpoint. Model connectivity is restricted to localhost or private network.' },
+        { status: 400 }
+      );
+    }
 
     const provider = getAIProvider(payload.endpoint, payload.model);
     const result = await provider.generateTurn(payload, request.signal);

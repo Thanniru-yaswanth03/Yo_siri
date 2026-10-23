@@ -7,7 +7,7 @@ import {
   buildRoleplayCoachingPrompt,
   parseRoleplayCoachingReport,
 } from '@/lib/roleplay';
-import { DEFAULT_OLLAMA_ENDPOINT, DEFAULT_MODEL_NAME } from '@/lib/ai';
+import { DEFAULT_OLLAMA_ENDPOINT, DEFAULT_MODEL_NAME, isTrustedEndpoint } from '@/lib/ai';
 
 interface RoleplayChatRequest {
   action: 'chat';
@@ -39,6 +39,13 @@ export async function POST(request: NextRequest) {
 
     const endpoint = (body.endpoint || DEFAULT_OLLAMA_ENDPOINT).replace(/\/+$/, '');
     const model = body.model || DEFAULT_MODEL_NAME;
+
+    if (!isTrustedEndpoint(endpoint)) {
+      return NextResponse.json(
+        { error: 'Untrusted AI endpoint. Connectivity is restricted to localhost or private network.' },
+        { status: 400 }
+      );
+    }
 
     const resolvedScenario: RoleplayScenario | undefined =
       body.scenario ||

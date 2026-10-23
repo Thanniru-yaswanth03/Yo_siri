@@ -20,33 +20,41 @@ export function OneMinuteChallengeTimer({
 }: OneMinuteChallengeTimerProps) {
   const [prevDuration, setPrevDuration] = useState(durationSeconds);
   const [timeLeft, setTimeLeft] = useState(durationSeconds);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const onTimeUpRef = useRef(onTimeUp);
 
-  if (durationSeconds !== prevDuration) {
+  useEffect(() => {
+    onTimeUpRef.current = onTimeUp;
+  }, [onTimeUp]);
+
+  // Sync timeLeft when durationSeconds changes (standard React pattern for state from props)
+  if (prevDuration !== durationSeconds) {
     setPrevDuration(durationSeconds);
     setTimeLeft(durationSeconds);
   }
 
+  // Handle interval countdown
   useEffect(() => {
-    if (isRunning && timeLeft > 0) {
-      timerRef.current = setInterval(() => {
-        setTimeLeft((prev) => {
-          if (prev <= 1) {
-            clearInterval(timerRef.current!);
-            onTimeUp?.();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-    }
+    if (!isRunning) return;
 
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [isRunning, timeLeft, onTimeUp]);
+    const interval = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isRunning]);
+
+  // Safely trigger onTimeUp when countdown reaches 0
+  useEffect(() => {
+    if (isRunning && timeLeft === 0) {
+      onTimeUpRef.current?.();
+    }
+  }, [isRunning, timeLeft]);
 
   const percentage = Math.max(0, Math.min(100, (timeLeft / durationSeconds) * 100));
 

@@ -17,6 +17,11 @@ export interface SpeechSynthesisHandlers {
   onError?: (error: string) => void;
 }
 
+export function clampSpeechRate(rate: number): number {
+  if (typeof rate !== 'number' || isNaN(rate)) return 1.0;
+  return Math.min(2.0, Math.max(0.5, rate));
+}
+
 export class BrowserSpeechSynthesizer {
   private currentUtterance: SpeechSynthesisUtterance | null = null;
   private voices: SpeechVoiceOption[] = [];
@@ -66,7 +71,7 @@ export class BrowserSpeechSynthesizer {
   }
 
   public setRate(rate: number): void {
-    this.speechRate = Math.min(2.0, Math.max(0.5, rate));
+    this.speechRate = clampSpeechRate(rate);
   }
 
   public setPitch(pitch: number): void {

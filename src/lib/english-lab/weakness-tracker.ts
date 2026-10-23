@@ -63,12 +63,14 @@ const CATEGORY_METADATA: Record<
   },
 };
 
+let memoryPatterns: WeaknessPattern[] = [];
+
 export class PersonalWeaknessTracker {
   /**
-   * Load stored patterns from LocalStorage (SSR safe)
+   * Load stored patterns from LocalStorage (SSR safe with memory fallback)
    */
   public static getStoredPatterns(): WeaknessPattern[] {
-    if (typeof window === 'undefined') return [];
+    if (typeof window === 'undefined') return [...memoryPatterns];
     try {
       const data = localStorage.getItem(STORAGE_KEY);
       if (!data) return [];
@@ -80,15 +82,28 @@ export class PersonalWeaknessTracker {
   }
 
   /**
-   * Save patterns to LocalStorage
+   * Save patterns to LocalStorage (with memory fallback)
    */
   public static savePatterns(patterns: WeaknessPattern[]): void {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') {
+      memoryPatterns = [...patterns];
+      return;
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(patterns));
     } catch {
       // ignore
     }
+  }
+
+  /**
+   * Reset all stored patterns
+   */
+  public static clearAll(): void {
+    if (typeof window === 'undefined') {
+      memoryPatterns = [];
+    }
+    this.savePatterns([]);
   }
 
   /**
@@ -106,7 +121,30 @@ export class PersonalWeaknessTracker {
     const existingPatterns = this.getStoredPatterns();
     const now = new Date().toISOString();
 
-    const patternIndex = existingPatterns.findIndex((p) => p.category === category);
+    // Normalize category string to handle AI classification variations
+    const catStr = String(category || '').toLowerCase();
+    const normalizedCategory: WeaknessCategory =
+      catStr in CATEGORY_METADATA
+        ? (catStr as WeaknessCategory)
+        : catStr.includes('tense')
+        ? 'tense-errors'
+        : catStr.includes('preposition') || catStr.includes('article')
+        ? 'articles-prepositions'
+        : catStr.includes('subject') || catStr.includes('verb') || catStr.includes('agreement')
+        ? 'subject-verb-agreement'
+        : catStr.includes('filler')
+        ? 'filler-words'
+        : catStr.includes('vocab') || catStr.includes('word')
+        ? 'repetitive-vocabulary'
+        : catStr.includes('rambl') || catStr.includes('length') || catStr.includes('concis')
+        ? 'rambling-answers'
+        : catStr.includes('struct') || catStr.includes('organ')
+        ? 'weak-structure'
+        : catStr.includes('example') || catStr.includes('specif')
+        ? 'missing-examples'
+        : 'unclear-explanations';
+
+    const patternIndex = existingPatterns.findIndex((p) => p.category === normalizedCategory);
 
     const newEvidence: WeaknessEvidence = {
       verbatimExcerpt: evidenceItem.verbatimExcerpt,
@@ -124,10 +162,14 @@ export class PersonalWeaknessTracker {
       p.evidence = [newEvidence, ...p.evidence.slice(0, 9)]; // keep latest 10 evidence items
       existingPatterns[patternIndex] = p;
     } else {
-      const meta = CATEGORY_METADATA[category];
+      const meta = CATEGORY_METADATA[normalizedCategory] || {
+        title: 'Communication Clarity',
+        description: 'Focus on clear, precise, and articulate expression.',
+        defaultConstraint: 'Speak with clear sentence structure.',
+      };
       const newPattern: WeaknessPattern = {
-        id: `weakness-${category}-${Date.now()}`,
-        category,
+        id: `weakness-${normalizedCategory}-${Date.now()}`,
+        category: normalizedCategory,
         title: meta.title,
         description: meta.description,
         frequency: 1,

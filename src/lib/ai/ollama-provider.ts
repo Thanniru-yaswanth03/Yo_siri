@@ -11,6 +11,38 @@ import { TurnFeedback } from '@/types';
 export const DEFAULT_OLLAMA_ENDPOINT = 'http://127.0.0.1:11434';
 export const DEFAULT_MODEL_NAME = 'llama3.2:1b';
 
+/**
+ * Validates that an AI endpoint is restricted to trusted localhost or private LAN addresses
+ * to prevent SSRF and unencrypted transmission of transcripts to third-party endpoints.
+ */
+export function isTrustedEndpoint(endpoint: string): boolean {
+  if (!endpoint || typeof endpoint !== 'string') return false;
+  try {
+    const url = new URL(endpoint);
+    const host = url.hostname.toLowerCase();
+    // Allow loopback / localhost
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '::1' ||
+      host.endsWith('.localhost')
+    ) {
+      return true;
+    }
+    // Allow private LAN IPv4 (RFC 1918)
+    if (
+      /^192\.168\.\d{1,3}\.\d{1,3}$/.test(host) ||
+      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(host)
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 interface OllamaTagModel {
   name: string;
   model: string;
@@ -52,6 +84,22 @@ export class OllamaProvider implements AIProvider {
     targetModel: string = this.defaultModel
   ): Promise<AIAvailabilityResult> {
     const cleanEndpoint = endpoint.replace(/\/+$/, '');
+
+    if (!isTrustedEndpoint(cleanEndpoint)) {
+      return {
+        isAvailable: false,
+        status: 'error',
+        endpoint: cleanEndpoint,
+        installedModels: [],
+        activeModel: targetModel,
+        errorMessage: 'Untrusted AI endpoint. Local model connectivity is restricted to localhost or private LAN.',
+        troubleshooting: {
+          title: 'Untrusted AI Endpoint',
+          explanation: `The endpoint "${cleanEndpoint}" is not an allowed local loopback or private network address.`,
+          command: 'ollama serve',
+        },
+      };
+    }
 
     try {
       const controller = new AbortController();
@@ -172,6 +220,10 @@ export class OllamaProvider implements AIProvider {
     const endpoint = (request.endpoint || this.defaultEndpoint).replace(/\/+$/, '');
     const model = request.model || this.defaultModel;
     const timeoutMs = request.timeoutMs || 45000;
+
+    if (!isTrustedEndpoint(endpoint)) {
+      throw new Error(`Untrusted AI endpoint "${endpoint}". Model connectivity is restricted to localhost or private LAN.`);
+    }
 
     // 1. Input Validation
     if (!request.messages || request.messages.length === 0) {

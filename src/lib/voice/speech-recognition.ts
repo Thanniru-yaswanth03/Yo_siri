@@ -111,6 +111,23 @@ export interface SpeechRecognizerHandlers {
   onEnd: () => void;
 }
 
+export function getSpeechRecognitionAdvice(errType: SpeechRecognitionErrorType): string {
+  switch (errType) {
+    case 'not-allowed':
+      return 'Microphone permission was blocked. Check site permissions in your browser address bar.';
+    case 'no-speech':
+      return 'No speech was detected. Tap the microphone and speak clearly into your mic.';
+    case 'audio-capture':
+      return 'No microphone device was detected. Ensure your microphone is connected and not muted.';
+    case 'network':
+      return 'Network error during speech recognition. Check your connection or use text input.';
+    case 'aborted':
+      return 'Speech recognition was stopped.';
+    default:
+      return 'Recognition failed. Please try again or type your message.';
+  }
+}
+
 export class BrowserSpeechRecognizer {
   private recognition: ISpeechRecognition | null = null;
   private isListeningActive = false;
@@ -184,17 +201,7 @@ export class BrowserSpeechRecognizer {
             ? 'aborted'
             : 'unknown';
 
-        let userAdvice = 'Recognition failed. Please try again or type your message.';
-        if (errType === 'not-allowed') {
-          userAdvice = 'Microphone permission was blocked. Check site permissions in your browser address bar.';
-        } else if (errType === 'no-speech') {
-          userAdvice = 'No speech was detected. Tap the microphone and speak clearly into your mic.';
-        } else if (errType === 'audio-capture') {
-          userAdvice = 'No microphone device was detected. Ensure your microphone is connected and not muted.';
-        } else if (errType === 'network') {
-          userAdvice = 'Network error during speech recognition. Check your connection or use text input.';
-        }
-
+        const userAdvice = getSpeechRecognitionAdvice(errType);
         handlers.onError(errType, userAdvice);
       };
 
