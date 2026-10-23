@@ -28,6 +28,7 @@ import {
 import { useAIEngine } from '@/hooks/useAIEngine';
 import { useVoiceEngine } from '@/hooks/useVoiceEngine';
 import { canSubmitInput } from '@/lib/voice';
+import { AppStorage, StorageSessionMode } from '@/lib/storage';
 
 interface ConversationRoomProps {
   mode: PracticeMode;
@@ -166,6 +167,31 @@ export function ConversationRoom({
     cancelVoiceSession();
     setActiveAudioMessageId(null);
     setSessionSummaryOpen(true);
+
+    const userMsgs = messages.filter((m) => m.role === 'user');
+    const userWords = userMsgs.reduce(
+      (acc, m) => acc + m.content.split(/\s+/).filter(Boolean).length,
+      0
+    );
+    const spokenSeconds = Math.round((userWords / 130) * 60);
+
+    const storageMode: StorageSessionMode = mode;
+
+    AppStorage.saveSession({
+      id: `session-${mode}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      mode: storageMode,
+      title: modeTitle,
+      startedAt: new Date(Date.now() - secondsElapsed * 1000).toISOString(),
+      endedAt: new Date().toISOString(),
+      durationSeconds: secondsElapsed,
+      turnsCount: messages.length,
+      userSpokenSeconds: Math.max(5, spokenSeconds),
+      summary: `Completed ${modeTitle} session with ${messages.length} total messages.`,
+      turns: userMsgs.map((m, idx) => ({
+        turnIndex: idx + 1,
+        userAnswer: m.content,
+      })),
+    }).catch((err) => console.error('Failed to save conversation session to IndexedDB:', err));
   };
 
   // Reset Session

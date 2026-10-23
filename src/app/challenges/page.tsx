@@ -1,196 +1,243 @@
 'use client';
 
-import React, { useState } from 'react';
-import { ConversationRoom } from '@/components/conversation/ConversationRoom';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  TrophyIcon,
-  FlameIcon,
-  ClockIcon,
-  TargetIcon,
-  CheckIcon,
-  ArrowRightIcon,
-} from '@/components/icons';
-import { DailyChallengeItem } from '@/types';
-
-const dailyChallenges: DailyChallengeItem[] = [
-  {
-    id: 'challenge-elevator',
-    title: 'The 60-Second Technical Pitch',
-    category: 'Interview Fluency',
-    difficulty: 'Intermediate',
-    durationMinutes: 3,
-    description:
-      'Explain what your current project or application does to a curious peer in under 60 seconds without saying "um" or "like".',
-    prompt:
-      'Ready for your 60-Second Pitch? The timer starts when you speak. Tell me what your primary application does, who it serves, and what core technical challenge you solved.',
-    objective: 'Deliver a concise value proposition with high energy and no verbal crutches.',
-    practiceMode: 'interview',
-  },
-  {
-    id: 'challenge-diplomacy',
-    title: 'Diplomatic Disagreement in Code Review',
-    category: 'Workplace Communication',
-    difficulty: 'Advanced',
-    durationMinutes: 4,
-    description:
-      'A colleague wants to push a hacky workaround to meet a Friday deadline. Express your concern clearly without sounding condescending or blocking.',
-    prompt:
-      'Your colleague says: "Look, I know this is a messy hack, but product wants it deployed today. Can you just approve the pull request and we will clean it up later?" How do you respond respectfully?',
-    objective: 'Acknowledge the deadline pressure first, then advocate for the stable compromise.',
-    practiceMode: 'roleplay',
-  },
-  {
-    id: 'challenge-tenses',
-    title: 'Past vs Hypothetical Tense Precision',
-    category: 'English Lab',
-    difficulty: 'Beginner',
-    durationMinutes: 3,
-    description:
-      'Train conditional grammar: explain a past mistake and state what you would have done differently using correct conditional modals.',
-    prompt:
-      'Welcome to the Tense Precision drill. Think about a minor mistake or oversight from last month. Complete this sentence: "If I had verified the configuration earlier, I would have avoided..." and elaborate in two sentences.',
-    objective: 'Flawlessly connect "had + past participle" with "would have + verb".',
-    practiceMode: 'english-lab',
-  },
-];
+  DailyPlanTier,
+  DAILY_PLANS,
+  DailyChallengeDefinition,
+  getDailyChallenges,
+} from '@/lib/challenges';
+import { AppStorage, ChallengeCompletionRecord } from '@/lib/storage';
+import { ChallengeExecutionModal } from '@/components/challenges';
+import { FlameIcon, ClockIcon } from '@/components/icons';
 
 export default function ChallengesPage() {
-  const [activeChallenge, setActiveChallenge] = useState<DailyChallengeItem | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<DailyPlanTier>(() => {
+    if (typeof window === 'undefined') return '15-min';
+    try {
+      const saved = localStorage.getItem('yo-siri-plan');
+      return saved === '10-min' || saved === '15-min' || saved === '30-min' ? saved : '15-min';
+    } catch {
+      return '15-min';
+    }
+  });
+
+  const [challenges, setChallenges] = useState<DailyChallengeDefinition[]>(() =>
+    getDailyChallenges()
+  );
+  const [activeChallenge, setActiveChallenge] = useState<DailyChallengeDefinition | null>(null);
+  const [todayCompletions, setTodayCompletions] = useState<ChallengeCompletionRecord[]>([]);
+
+  const todayStr = typeof window !== 'undefined'
+    ? new Date().toISOString().split('T')[0]
+    : 'today';
+
+  const refreshCompletions = useCallback(() => {
+    const today = new Date().toISOString().split('T')[0];
+    AppStorage.getChallengeCompletions(today).then((records) => {
+      setTodayCompletions(records);
+    });
+  }, []);
+
+  useEffect(() => {
+    refreshCompletions();
+  }, [refreshCompletions]);
+
+  const handleSelectPlan = (tier: DailyPlanTier) => {
+    setSelectedPlan(tier);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('yo-siri-plan', tier);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const currentPlanConfig = DAILY_PLANS[selectedPlan];
+  const planChallengeIds = new Set(currentPlanConfig.challengeIds);
+
+  const completedIds = new Set(todayCompletions.map((c) => c.challengeId));
+  const planCompletedCount = currentPlanConfig.challengeIds.filter((id) =>
+    completedIds.has(`challenge-${id}`) || completedIds.has(id)
+  ).length;
+  const planProgressPercent = Math.round(
+    (planCompletedCount / currentPlanConfig.challengeIds.length) * 100
+  );
 
   return (
-    <div className="space-y-8 pb-12">
-      {/* If a challenge is active, render the ConversationRoom */}
-      {activeChallenge ? (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => setActiveChallenge(null)}
-              className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
-            >
-              ← Back to All Daily Challenges
-            </button>
-            <span className="text-xs text-slate-400">
-              Active Challenge: {activeChallenge.title}
+    <div className="space-y-6 max-w-5xl mx-auto pb-12">
+      {/* Top Banner */}
+      <div className="p-6 rounded-3xl bg-slate-900 border border-slate-800 shadow-xl space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-violet-400 px-2.5 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/20">
+                Daily Speaking Workouts
+              </span>
+              <span className="text-xs text-slate-400">
+                10-, 15-, and 30-Minute Adaptive Plans
+              </span>
+            </div>
+            <h1 className="text-2xl font-bold text-slate-100 tracking-tight mt-1">
+              Daily Speaking Challenges
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-semibold">
+              <FlameIcon size={16} />
+              <span>Today&apos;s Date: {todayStr}</span>
+            </div>
+          </div>
+        </div>
+
+        <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
+          Daily deliberate practice is the proven path to effortless vocal fluency. Select your daily plan commitment and conquer each challenge with voice or text interaction.
+        </p>
+
+        {/* Plan Selector Buttons */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+          {(['10-min', '15-min', '30-min'] as DailyPlanTier[]).map((tier) => {
+            const plan = DAILY_PLANS[tier];
+            const isSelected = selectedPlan === tier;
+            return (
+              <button
+                key={tier}
+                type="button"
+                onClick={() => handleSelectPlan(tier)}
+                className={`p-3.5 rounded-2xl border text-left transition-all flex flex-col justify-between ${
+                  isSelected
+                    ? 'bg-violet-950/40 border-violet-500 ring-1 ring-violet-500 text-slate-100 shadow-lg shadow-violet-950/50'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between text-xs font-bold">
+                    <span>{plan.title}</span>
+                    <span className="flex items-center gap-1 font-mono text-[11px] text-violet-400">
+                      <ClockIcon size={12} />
+                      {plan.durationMinutes}m
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">
+                    {plan.description}
+                  </p>
+                </div>
+                <div className="pt-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                  {plan.challengeIds.length} Core Challenges
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Plan Completion Progress Bar */}
+      <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex flex-wrap items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-200">
+              {currentPlanConfig.title} Progress:
+            </span>
+            <span className="text-xs font-mono text-violet-400">
+              {planCompletedCount} of {currentPlanConfig.challengeIds.length} completed today
             </span>
           </div>
-
-          <ConversationRoom
-            mode={activeChallenge.practiceMode}
-            modeTitle={`Daily Challenge: ${activeChallenge.title}`}
-            modeBadge={activeChallenge.category}
-            initialQuestion={activeChallenge.prompt}
-            scenarioDetails={{
-              topic: activeChallenge.category,
-              objective: activeChallenge.objective,
-              difficulty: activeChallenge.difficulty,
-            }}
-          />
-        </div>
-      ) : (
-        <>
-          {/* Header */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200/60 dark:border-amber-900/40 text-xs font-semibold mb-2">
-                <TrophyIcon size={14} className="text-amber-500" />
-                <span>Today&apos;s Workout Routine</span>
-              </div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-                Daily Speaking Challenges
-              </h1>
-              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                Short, high-intensity speaking workouts designed to build confidence in specific communication scenarios.
-              </p>
-            </div>
-
-            {/* Streak motivation badge */}
-            <div className="flex items-center gap-2 p-3 rounded-2xl bg-white dark:bg-[#0F172A] border border-slate-200 dark:border-[#1E293B] shadow-sm shrink-0">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-950/50 flex items-center justify-center text-amber-500">
-                <FlameIcon size={20} />
-              </div>
-              <div>
-                <span className="text-xs text-slate-400 block font-medium">Practice Streak</span>
-                <span className="text-sm font-bold text-slate-900 dark:text-white">
-                  0 Days (Ready)
-                </span>
-              </div>
-            </div>
+          <div className="w-64 h-2 rounded-full bg-slate-950 border border-slate-800 overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-violet-600 to-emerald-500 transition-all duration-500 rounded-full"
+              style={{ width: `${planProgressPercent}%` }}
+            />
           </div>
+        </div>
 
-          {/* Challenges Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            {dailyChallenges.map((challenge, index) => (
+        {planProgressPercent === 100 && (
+          <div className="text-xs font-semibold px-3 py-1.5 rounded-xl bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+            🎉 Today&apos;s {currentPlanConfig.title} is Complete!
+          </div>
+        )}
+      </div>
+
+      {/* Challenges List */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between px-1">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+            Challenges in your {selectedPlan} plan
+          </h2>
+          <span className="text-xs text-slate-500">
+            Click any challenge to begin
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+          {challenges.map((c) => {
+            const isIncludedInPlan = planChallengeIds.has(c.type);
+            const isDone = completedIds.has(c.id) || completedIds.has(c.type);
+
+            return (
               <div
-                key={challenge.id}
-                className="bg-white dark:bg-[#0F172A] border border-slate-200 dark:border-[#1E293B] rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-5 hover:border-indigo-500/50 transition-colors"
+                key={c.id}
+                onClick={() => setActiveChallenge(c)}
+                className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-3 ${
+                  isDone
+                    ? 'bg-emerald-950/10 border-emerald-900/40 hover:border-emerald-700'
+                    : isIncludedInPlan
+                    ? 'bg-slate-900/90 border-slate-800 hover:border-violet-600 hover:bg-slate-900'
+                    : 'bg-slate-950/40 border-slate-800/60 opacity-60 hover:opacity-90'
+                }`}
               >
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-slate-400">
-                      Challenge #{index + 1}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                      {c.badge}
                     </span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
-                        challenge.difficulty === 'Beginner'
-                          ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400'
-                          : challenge.difficulty === 'Intermediate'
-                          ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400'
-                          : 'bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400'
-                      }`}
-                    >
-                      {challenge.difficulty}
-                    </span>
-                  </div>
-
-                  <div>
-                    <h3 className="font-bold text-base text-slate-900 dark:text-white">
-                      {challenge.title}
-                    </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                      {challenge.description}
-                    </p>
-                  </div>
-
-                  <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
                     <div className="flex items-center gap-2">
-                      <ClockIcon size={14} className="text-indigo-500 shrink-0" />
-                      <span>{challenge.durationMinutes} minutes duration</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <TargetIcon size={14} className="text-indigo-500 shrink-0" />
-                      <span className="truncate">{challenge.category}</span>
+                      <span className="text-[11px] font-mono text-slate-400">
+                        {c.durationSeconds}s
+                      </span>
+                      {isDone && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          Completed ✓
+                        </span>
+                      )}
                     </div>
                   </div>
+
+                  <h3 className="text-sm font-bold text-slate-100">
+                    {c.title}
+                  </h3>
+
+                  <p className="text-xs text-slate-400 line-clamp-2">
+                    {c.objective}
+                  </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setActiveChallenge(challenge)}
-                  className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs flex items-center justify-center gap-2 transition-colors shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-                >
-                  <span>Launch Challenge</span>
-                  <ArrowRightIcon size={14} />
-                </button>
+                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs">
+                  <span className="text-[11px] text-slate-500">
+                    {isIncludedInPlan ? 'Included in current plan' : 'Optional bonus'}
+                  </span>
+                  <span className="font-semibold text-violet-400">
+                    {isDone ? 'Practice Again →' : 'Start Challenge →'}
+                  </span>
+                </div>
               </div>
-            ))}
-          </div>
+            );
+          })}
+        </div>
+      </div>
 
-          {/* Quick Tip Card */}
-          <div className="p-5 rounded-2xl bg-indigo-50/50 dark:bg-[#131B2E] border border-indigo-200/50 dark:border-indigo-900/30 flex items-start gap-4">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
-              <CheckIcon size={16} />
-            </div>
-            <div className="text-xs space-y-1">
-              <h4 className="font-bold text-slate-900 dark:text-white">
-                Pro Tip: The 3-Second Pause Rule
-              </h4>
-              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                When faced with an unexpected question, taking a deliberate three-second breath before answering makes you sound thoughtful and composed, whereas rushing in usually leads to verbal fillers.
-              </p>
-            </div>
-          </div>
-        </>
+      {/* Execution Modal */}
+      {activeChallenge && (
+        <ChallengeExecutionModal
+          challenge={activeChallenge}
+          planTier={selectedPlan}
+          onClose={() => setActiveChallenge(null)}
+          onCompleted={() => {
+            refreshCompletions();
+            setChallenges(getDailyChallenges());
+          }}
+        />
       )}
     </div>
   );
