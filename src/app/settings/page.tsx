@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTheme } from '@/context/ThemeContext';
 import {
   SunIcon,
@@ -8,6 +8,8 @@ import {
   SparklesIcon,
   CheckIcon,
   RotateCcwIcon,
+  AlertCircleIcon,
+  InfoIcon,
 } from '@/components/icons';
 
 type Strictness = 'supportive' | 'balanced' | 'rigorous';
@@ -27,7 +29,7 @@ function getStoredValue<T>(key: string, defaultValue: T): T {
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
 
-  // Local settings state initialized safely from storage without cascading renders
+  // Local settings state
   const [dailyGoalMinutes, setDailyGoalMinutes] = useState<number>(() => {
     if (typeof window === 'undefined') return 15;
     try {
@@ -50,11 +52,38 @@ export default function SettingsPage() {
     getStoredValue<string>('yo-siri-accent', 'Standard American')
   );
 
-  const [ollamaEndpoint, setOllamaEndpoint] = useState<string>('http://127.0.0.1:11434');
-  const [ollamaModel, setOllamaModel] = useState<string>('gpt-oss:latest');
+  const [ollamaEndpoint, setOllamaEndpoint] = useState<string>(() =>
+    getStoredValue<string>('yo-siri-endpoint', 'http://127.0.0.1:11434')
+  );
+
+  const [ollamaModel, setOllamaModel] = useState<string>(() =>
+    getStoredValue<string>('yo-siri-model', 'llama3.2:1b')
+  );
+
+  const [installedModels, setInstalledModels] = useState<string[]>([]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [testingOllama, setTestingOllama] = useState<boolean>(false);
-  const [ollamaStatusMessage, setOllamaStatusMessage] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+    warning?: string;
+  } | null>(null);
+
+  // Probe available models from API on mount
+  useEffect(() => {
+    async function fetchInstalledModels() {
+      try {
+        const res = await fetch(`/api/ai/health?endpoint=${encodeURIComponent(ollamaEndpoint)}`);
+        const data = await res.json();
+        if (data.installedModels && Array.isArray(data.installedModels)) {
+          setInstalledModels(data.installedModels);
+        }
+      } catch {
+        // fallback
+      }
+    }
+    fetchInstalledModels();
+  }, [ollamaEndpoint]);
 
   const handleSave = () => {
     try {
@@ -62,6 +91,8 @@ export default function SettingsPage() {
       localStorage.setItem('yo-siri-strictness', coachStrictness);
       localStorage.setItem('yo-siri-pace', speakingPace);
       localStorage.setItem('yo-siri-accent', targetAccent);
+      localStorage.setItem('yo-siri-endpoint', ollamaEndpoint);
+      localStorage.setItem('yo-siri-model', ollamaModel);
       setSaveStatus('Preferences saved successfully!');
       setTimeout(() => setSaveStatus(null), 3000);
     } catch {
@@ -69,13 +100,43 @@ export default function SettingsPage() {
     }
   };
 
-  const handleTestOllamaConnection = () => {
+  const handleTestOllamaConnection = async () => {
     setTestingOllama(true);
-    setOllamaStatusMessage(null);
-    setTimeout(() => {
+    setTestResult(null);
+    try {
+      const res = await fetch(
+        `/api/ai/health?endpoint=${encodeURIComponent(ollamaEndpoint)}&model=${encodeURIComponent(ollamaModel)}`
+      );
+      const data = await res.json();
+
+      if (data.isAvailable) {
+        setInstalledModels(data.installedModels || []);
+        let warning: string | undefined;
+        if (ollamaModel.includes('gpt-oss')) {
+          warning =
+            'Notice: gpt-oss (13 GB) requires more than 12 GB RAM. If you encounter Out-Of-Memory errors, switch to llama3.2:1b.';
+        }
+        setTestResult({
+          success: true,
+          message: `Connected successfully! Ollama is reachable and model "${data.activeModel}" is ready.`,
+          warning,
+        });
+      } else {
+        setTestResult({
+          success: false,
+          message: data.errorMessage || 'Cannot reach local Ollama daemon.',
+          warning: data.troubleshooting?.explanation,
+        });
+      }
+    } catch (err: unknown) {
+      setTestResult({
+        success: false,
+        message: err instanceof Error ? err.message : 'Connection test failed',
+        warning: 'Ensure Ollama is running with "ollama serve".',
+      });
+    } finally {
       setTestingOllama(false);
-      setOllamaStatusMessage('Connected: Ollama daemon is reachable on 127.0.0.1:11434 with model "gpt-oss:latest".');
-    }, 700);
+    }
   };
 
   const handleResetDefaults = () => {
@@ -84,7 +145,7 @@ export default function SettingsPage() {
     setCoachStrictness('balanced');
     setTargetAccent('Standard American');
     setOllamaEndpoint('http://127.0.0.1:11434');
-    setOllamaModel('gpt-oss:latest');
+    setOllamaModel('llama3.2:1b');
     setSaveStatus('Reset to default settings');
     setTimeout(() => setSaveStatus(null), 3000);
   };
@@ -216,7 +277,7 @@ export default function SettingsPage() {
       </section>
 
       {/* Section 4: Local Ollama Model Configuration */}
-      <section className="bg-white dark:bg-[#0F172A] border border-slate-200 dark:border-[#1E293B] rounded-2xl p-6 shadow-sm space-y-4">
+      <section className="bg-white dark:bg-[#0F172A] border border-slate-200 dark:border-[#1E293B] rounded-2xl p-6 shadow-sm space-y-5">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider text-xs">
@@ -227,9 +288,39 @@ export default function SettingsPage() {
             </p>
           </div>
           <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/40">
-            Detected: 127.0.0.1:11434
+            Endpoint: {ollamaEndpoint}
           </span>
         </div>
+
+        {/* Model Selection from Detected Models */}
+        {installedModels.length > 0 && (
+          <div className="space-y-2">
+            <label className="font-semibold text-slate-700 dark:text-slate-300 text-xs block">
+              Installed Models Detected on Local Machine:
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {installedModels.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setOllamaModel(m)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-mono border transition-all flex items-center gap-1.5 ${
+                    ollamaModel === m
+                      ? 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-500 text-indigo-700 dark:text-indigo-300 ring-1 ring-indigo-500'
+                      : 'bg-slate-50 dark:bg-[#161F30] border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-300'
+                  }`}
+                >
+                  <span>{m}</span>
+                  {m.includes('1b') && (
+                    <span className="text-[10px] px-1 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+                      Voice Recommended
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
           <div>
@@ -246,7 +337,7 @@ export default function SettingsPage() {
 
           <div>
             <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
-              Ollama Model Name
+              Active Model Tag
             </label>
             <input
               type="text"
@@ -257,21 +348,65 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 pt-2">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-1">
           <button
             type="button"
             onClick={handleTestOllamaConnection}
             disabled={testingOllama}
-            className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-[#1E293B] hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-colors flex items-center gap-2"
+            className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-[#1E293B] hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-colors flex items-center gap-2 self-start"
           >
             <SparklesIcon size={14} className="text-indigo-500" />
-            <span>{testingOllama ? 'Verifying...' : 'Test Connection'}</span>
+            <span>{testingOllama ? 'Probing Ollama...' : 'Test Connection'}</span>
           </button>
-          {ollamaStatusMessage && (
-            <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-in fade-in">
-              ✓ {ollamaStatusMessage}
-            </span>
+
+          {testResult && (
+            <div className="text-xs space-y-1 animate-in fade-in">
+              <span
+                className={`font-semibold flex items-center gap-1.5 ${
+                  testResult.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                }`}
+              >
+                {testResult.success ? <CheckIcon size={14} /> : <AlertCircleIcon size={14} />}
+                <span>{testResult.message}</span>
+              </span>
+              {testResult.warning && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400">{testResult.warning}</p>
+              )}
+            </div>
           )}
+        </div>
+
+        {/* Step-by-Step Setup Guide */}
+        <div className="mt-4 p-4 rounded-xl bg-slate-50 dark:bg-[#161F30] border border-slate-200 dark:border-slate-800 text-xs space-y-2.5">
+          <div className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <InfoIcon size={16} className="text-indigo-500" />
+            <span>How to install & run Ollama locally</span>
+          </div>
+          <ol className="list-decimal list-inside space-y-1.5 text-slate-600 dark:text-slate-300 text-[11px] leading-relaxed">
+            <li>
+              <strong>Download Ollama:</strong> Install the Windows installer from{' '}
+              <a
+                href="https://ollama.com"
+                target="_blank"
+                rel="noreferrer"
+                className="text-indigo-600 dark:text-indigo-400 underline"
+              >
+                ollama.com
+              </a>
+              .
+            </li>
+            <li>
+              <strong>Pull the voice model:</strong> Open PowerShell and run:
+              <code className="block mt-1 font-mono p-1.5 rounded bg-slate-900 text-slate-200">
+                ollama pull llama3.2:1b
+              </code>
+            </li>
+            <li>
+              <strong>Verify the service is active:</strong> By default Ollama runs in your system tray at{' '}
+              <code className="font-mono">http://127.0.0.1:11434</code>. You can also start it manually via{' '}
+              <code className="font-mono">ollama serve</code>.
+            </li>
+          </ol>
         </div>
       </section>
 

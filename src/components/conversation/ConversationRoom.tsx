@@ -24,6 +24,7 @@ import {
   UserIcon,
   InfoIcon,
 } from '@/components/icons';
+import { useAIEngine } from '@/hooks/useAIEngine';
 
 interface ConversationRoomProps {
   mode: PracticeMode;
@@ -60,8 +61,8 @@ export function ConversationRoom({
         id: 'msg-init',
         role: 'assistant',
         content: initialQuestion,
-        timestamp: 'Just now',
-        audioDurationSec: 6,
+        timestamp: '00:00',
+        audioDurationSec: 5,
       },
     ];
   });
@@ -75,6 +76,23 @@ export function ConversationRoom({
 
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // AI Engine Hook
+  const {
+    status: aiStatus,
+    isAvailable: aiAvailable,
+    activeModel,
+    error: aiError,
+    troubleshooting,
+    latencyMs,
+    sendTurn,
+    cancelGeneration,
+    retryLastTurn,
+    checkHealth,
+  } = useAIEngine({
+    mode,
+    scenarioContext: scenarioDetails,
+  });
 
   // Live Timer
   useEffect(() => {
@@ -93,7 +111,7 @@ export function ConversationRoom({
   // Auto-scroll transcript on new messages
   useEffect(() => {
     transcriptBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, voiceState]);
+  }, [messages, voiceState, aiStatus]);
 
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60);
@@ -126,174 +144,137 @@ export function ConversationRoom({
         id: `msg-${Date.now()}`,
         role: 'assistant',
         content: initialQuestion,
-        timestamp: 'Just now',
+        timestamp: '00:00',
         audioDurationSec: 5,
       },
     ]);
     setActiveFeedback(null);
   };
 
-  // Simulated Speech-to-Text & Assistant Generation
-  const simulateVoiceInput = () => {
-    if (voiceState === 'listening') {
-      // User tapped to finish speaking
-      setVoiceState('processing');
-
-      // Sample simulated user utterances based on mode
-      const sampleUserTurns: Record<PracticeMode, string> = {
-        conversation:
-          'I usually enjoy hiking on weekends because it clears my mind and helps me stay refreshed for work.',
-        interview:
-          'In my last project, I led the migration from a monolithic backend to microservices, which reduced API latency by 40%.',
-        'english-lab':
-          'If I would have known about the deadline earlier, I will have finished the presentation in time.',
-        roleplay:
-          'I understand your budget constraints, but based on my contributions and market benchmarks, a 15% adjustment reflects my scope.',
-      };
-
-      const spokenContent = sampleUserTurns[mode];
-
-      setTimeout(() => {
-        const userMsgId = `user-${Date.now()}`;
-        const newUserMsg: ConversationMessage = {
-          id: userMsgId,
-          role: 'user',
-          content: spokenContent,
-          timestamp: formatTime(secondsElapsed),
-        };
-
-        // Formulate feedback
-        const sampleFeedback: TurnFeedback =
-          mode === 'english-lab'
-            ? {
-                grammar: [
-                  {
-                    original: 'If I would have known... I will have finished',
-                    corrected: 'If I had known... I would have finished',
-                    explanation: 'Third conditional requires "had + past participle" in the if-clause and "would have + past participle" in the main clause.',
-                  },
-                ],
-                vocabulary: [
-                  {
-                    original: 'finished in time',
-                    upgrade: 'delivered ahead of schedule',
-                    reason: 'More professional and impact-driven phrasing.',
-                  },
-                ],
-                fluencyTip: 'Good sentence rhythm, but pause slightly after conditional clauses for added clarity.',
-                clarityScore: 78,
-                pacingNote: '128 WPM (Optimal cadence)',
-              }
-            : {
-                grammar: [],
-                vocabulary: [
-                  {
-                    original: 'clears my mind',
-                    upgrade: 'rejuvenates mental focus',
-                    reason: 'Adds professional articulation.',
-                  },
-                ],
-                fluencyTip: 'Great natural delivery! You sounded confident and articulate without filler words.',
-                clarityScore: 94,
-                pacingNote: '135 WPM (Engaging flow)',
-              };
-
-        // Formulate assistant response
-        const sampleReplies: Record<PracticeMode, string> = {
-          conversation:
-            'Hiking is a fantastic way to reset. Which trail or landscape do you find most scenic when you want to disconnect?',
-          interview:
-            'That is a measurable latency reduction. How did you ensure data consistency between services during that transition phase?',
-          'english-lab':
-            'Notice the third conditional structure here: "If I had known about the deadline earlier, I would have delivered the presentation ahead of schedule." Try saying that back to me!',
-          roleplay:
-            'I appreciate you laying out those benchmarks. Let’s look at how we can balance that with the quarterly department cap—could we tie part of it to performance milestones?',
-        };
-
-        const assistantMsgId = `asst-${Date.now()}`;
-        const newAssistantMsg: ConversationMessage = {
-          id: assistantMsgId,
-          role: 'assistant',
-          content: sampleReplies[mode],
-          timestamp: formatTime(secondsElapsed + 2),
-          audioDurationSec: 5,
-          feedback: sampleFeedback,
-        };
-
-        setMessages((prev) => [...prev, newUserMsg, newAssistantMsg]);
-        setActiveFeedback(sampleFeedback);
-        setVoiceState('speaking');
-
-        // Simulate speaking duration
-        setTimeout(() => {
-          setVoiceState('idle');
-        }, 4000);
-      }, 1200);
-    } else if (voiceState === 'idle') {
-      // Start listening
-      setVoiceState('listening');
-    } else if (voiceState === 'speaking') {
-      // User interrupts speaking
-      setVoiceState('idle');
-    }
-  };
-
-  // Text message submission fallback
-  const handleTextSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!textInput.trim() || !sessionActive) return;
-
-    const userText = textInput.trim();
-    setTextInput('');
+  // Dispatch turn to local AI model
+  const executeTurn = async (userText: string) => {
+    if (!userText.trim() || !sessionActive) return;
 
     const userMsgId = `user-${Date.now()}`;
     const newUserMsg: ConversationMessage = {
       id: userMsgId,
       role: 'user',
-      content: userText,
+      content: userText.trim(),
       timestamp: formatTime(secondsElapsed),
     };
 
-    setMessages((prev) => [...prev, newUserMsg]);
+    const updatedMessages = [...messages, newUserMsg];
+    setMessages(updatedMessages);
     setVoiceState('processing');
 
-    // Simulate assistant reply with coaching feedback
-    setTimeout(() => {
-      const assistantMsgId = `asst-${Date.now()}`;
-      const feedback: TurnFeedback = {
-        grammar: [],
-        vocabulary: [
-          {
-            original: 'think about',
-            upgrade: 'deliberate on / evaluate',
-            reason: 'Demonstrates deeper technical consideration.',
-          },
-        ],
-        fluencyTip: 'Clear expression. For added impact in spoken communication, lead with your conclusion first.',
-        clarityScore: 88,
-        pacingNote: 'Text-mode submission',
-      };
+    // Retrieve preferences
+    let strictness: 'supportive' | 'balanced' | 'rigorous' = 'balanced';
+    try {
+      const saved = localStorage.getItem('yo-siri-strictness');
+      if (saved === 'supportive' || saved === 'balanced' || saved === 'rigorous') {
+        strictness = saved;
+      }
+    } catch {
+      // fallback
+    }
 
+    const aiResult = await sendTurn(
+      updatedMessages,
+      strictness,
+      scenarioDetails?.difficulty || 'Intermediate'
+    );
+
+    if (aiResult) {
+      const assistantMsgId = `asst-${Date.now()}`;
       const newAssistantMsg: ConversationMessage = {
         id: assistantMsgId,
         role: 'assistant',
-        content: `Thank you for sharing that perspective. When explaining this to a stakeholder, what would be the primary trade-off you highlight first?`,
+        content: aiResult.spokenResponse,
         timestamp: formatTime(secondsElapsed + 1),
-        audioDurationSec: 4,
-        feedback,
+        audioDurationSec: Math.max(3, Math.round(aiResult.spokenResponse.split(' ').length / 2.5)),
+        feedback: aiResult.coaching,
       };
 
       setMessages((prev) => [...prev, newAssistantMsg]);
-      setActiveFeedback(feedback);
+      setActiveFeedback(aiResult.coaching);
       setVoiceState('speaking');
 
+      // Visual waveform indicator
       setTimeout(() => {
         setVoiceState('idle');
       }, 3500);
-    }, 1000);
+    } else {
+      // Generation failed or was cancelled
+      setVoiceState('idle');
+    }
   };
 
-  // Simulated audio playback for any message
+  // Handle Voice / Mic button click
+  const handleMicClick = () => {
+    if (aiStatus === 'generating') {
+      cancelGeneration();
+      setVoiceState('idle');
+      return;
+    }
+
+    if (voiceState === 'listening') {
+      // Finished speaking prompt (in Phase 2 this submits a test spoken turn)
+      setVoiceState('processing');
+      const sampleSpokenTurns: Record<PracticeMode, string> = {
+        conversation:
+          'I really enjoy building software with local AI because it guarantees data privacy and works completely offline.',
+        interview:
+          'In my previous role, I designed a caching layer that reduced database load by 35% during peak traffic spikes.',
+        'english-lab':
+          'If I would have known about the deadline earlier, I will have finished the presentation in time.',
+        roleplay:
+          'I understand the budget constraints, but based on my recent delivery of the auth system, a 10% raise reflects my contribution.',
+      };
+
+      executeTurn(sampleSpokenTurns[mode]);
+    } else if (voiceState === 'idle') {
+      setVoiceState('listening');
+    } else if (voiceState === 'speaking') {
+      setVoiceState('idle');
+    }
+  };
+
+  // Handle Text input submission
+  const handleTextSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!textInput.trim() || !sessionActive || aiStatus === 'generating') return;
+    const text = textInput;
+    setTextInput('');
+    executeTurn(text);
+  };
+
+  // Handle Retry
+  const handleRetry = async () => {
+    setVoiceState('processing');
+    const aiResult = await retryLastTurn();
+    if (aiResult) {
+      const assistantMsgId = `asst-${Date.now()}`;
+      const newAssistantMsg: ConversationMessage = {
+        id: assistantMsgId,
+        role: 'assistant',
+        content: aiResult.spokenResponse,
+        timestamp: formatTime(secondsElapsed),
+        audioDurationSec: Math.max(3, Math.round(aiResult.spokenResponse.split(' ').length / 2.5)),
+        feedback: aiResult.coaching,
+      };
+
+      setMessages((prev) => [...prev, newAssistantMsg]);
+      setActiveFeedback(aiResult.coaching);
+      setVoiceState('speaking');
+      setTimeout(() => {
+        setVoiceState('idle');
+      }, 3500);
+    } else {
+      setVoiceState('idle');
+    }
+  };
+
+  // Simulated audio replay for any message
   const playAudioSimulation = (messageId: string) => {
     setActiveAudioMessageId(messageId);
     setVoiceState('speaking');
@@ -318,8 +299,33 @@ export function ConversationRoom({
             </h1>
           </div>
 
-          {/* Session Timer & Status Controls */}
+          {/* Model Status Badge & Session Timer */}
           <div className="flex items-center gap-2">
+            {/* Active AI model & latency pill */}
+            <div
+              className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-mono ${
+                aiAvailable
+                  ? 'bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-200/60 dark:border-emerald-800/40 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-rose-50/60 dark:bg-rose-950/30 border-rose-200/60 dark:border-rose-800/40 text-rose-700 dark:text-rose-300'
+              }`}
+              title={aiAvailable ? `Local AI Model: ${activeModel}` : 'Ollama Offline'}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  aiStatus === 'generating'
+                    ? 'bg-amber-400 animate-ping'
+                    : aiAvailable
+                    ? 'bg-emerald-500'
+                    : 'bg-rose-500'
+                }`}
+              />
+              <span>{activeModel}</span>
+              {latencyMs && (
+                <span className="text-[10px] opacity-75 font-sans">• {latencyMs}ms</span>
+              )}
+            </div>
+
+            {/* Timer */}
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 text-xs font-mono font-medium text-slate-700 dark:text-slate-200">
               <ClockIcon size={14} className="text-indigo-500" />
               <span>{formatTime(secondsElapsed)}</span>
@@ -358,7 +364,7 @@ export function ConversationRoom({
           </div>
         </div>
 
-        {/* Scenario Details Objective Banner (if provided) */}
+        {/* Objective Banner */}
         {scenarioDetails && (
           <div className="px-6 py-2.5 bg-indigo-50/40 dark:bg-indigo-950/20 border-b border-indigo-100/60 dark:border-indigo-900/30 flex items-center justify-between text-xs text-indigo-900 dark:text-indigo-300">
             <div className="flex items-center gap-2">
@@ -370,6 +376,43 @@ export function ConversationRoom({
             <span className="font-medium text-slate-500 dark:text-slate-400">
               Level: {scenarioDetails.difficulty}
             </span>
+          </div>
+        )}
+
+        {/* AI Error & Troubleshooting Notification Banner */}
+        {aiError && (
+          <div className="m-4 p-4 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 text-xs space-y-2 animate-in fade-in duration-200">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2 font-bold text-rose-700 dark:text-rose-300">
+                <AlertCircleIcon size={16} />
+                <span>{troubleshooting?.title || 'AI Engine Error'}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  className="px-2.5 py-1 rounded bg-rose-600 text-white font-semibold hover:bg-rose-700 transition-colors"
+                >
+                  Retry Turn
+                </button>
+                <button
+                  type="button"
+                  onClick={checkHealth}
+                  className="px-2 py-1 rounded border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/40 transition-colors"
+                >
+                  Check Ollama
+                </button>
+              </div>
+            </div>
+            <p className="text-slate-700 dark:text-slate-300">
+              {troubleshooting?.explanation || aiError}
+            </p>
+            {troubleshooting?.command && (
+              <div className="font-mono text-[11px] bg-slate-900 text-slate-100 p-2 rounded-lg flex items-center justify-between">
+                <span>{troubleshooting.command}</span>
+                <span className="text-[10px] text-slate-400">Run in terminal</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -457,7 +500,7 @@ export function ConversationRoom({
             </div>
           )}
 
-          {voiceState === 'processing' && (
+          {(voiceState === 'processing' || aiStatus === 'generating') && (
             <div className="flex gap-3 max-w-md mr-auto">
               <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white shrink-0">
                 <BotIcon size={16} />
@@ -466,7 +509,14 @@ export function ConversationRoom({
                 <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" />
                 <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:0.2s]" />
                 <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:0.4s]" />
-                <span>Formulating response & grammar analysis...</span>
+                <span>Yo Siri ({activeModel}) is thinking...</span>
+                <button
+                  type="button"
+                  onClick={cancelGeneration}
+                  className="ml-2 text-[11px] underline text-rose-500 hover:text-rose-600"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           )}
@@ -490,26 +540,30 @@ export function ConversationRoom({
               {/* Main Microphone Button */}
               <button
                 type="button"
-                onClick={simulateVoiceInput}
+                onClick={handleMicClick}
                 disabled={!sessionActive}
                 className={`relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-200 shadow-lg focus:outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/50 ${
-                  voiceState === 'listening'
+                  aiStatus === 'generating'
+                    ? 'bg-amber-600 text-white animate-pulse'
+                    : voiceState === 'listening'
                     ? 'bg-rose-600 text-white scale-110 shadow-rose-500/40 ring-4 ring-rose-500/20'
                     : voiceState === 'speaking'
                     ? 'bg-violet-600 text-white shadow-violet-500/40 ring-4 ring-violet-500/20'
-                    : voiceState === 'processing'
-                    ? 'bg-amber-600 text-white animate-pulse'
                     : 'bg-indigo-600 hover:bg-indigo-700 text-white hover:scale-105 shadow-indigo-500/30'
                 }`}
                 aria-label={
-                  voiceState === 'listening'
+                  aiStatus === 'generating'
+                    ? 'Cancel generation'
+                    : voiceState === 'listening'
                     ? 'Stop listening'
                     : voiceState === 'speaking'
                     ? 'Interrupt assistant'
                     : 'Tap to speak'
                 }
               >
-                {voiceState === 'listening' ? (
+                {aiStatus === 'generating' ? (
+                  <SquareIcon size={20} />
+                ) : voiceState === 'listening' ? (
                   <SquareIcon size={24} />
                 ) : voiceState === 'speaking' ? (
                   <MicOffIcon size={24} />
@@ -523,35 +577,35 @@ export function ConversationRoom({
             <div className="flex items-center gap-1 h-6">
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking'
+                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
                     ? 'h-5 bg-indigo-500 animate-voice-bar-1'
                     : 'h-1.5 bg-slate-300 dark:bg-slate-700'
                 }`}
               />
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking'
+                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
                     ? 'h-6 bg-indigo-500 animate-voice-bar-2'
                     : 'h-2 bg-slate-300 dark:bg-slate-700'
                 }`}
               />
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking'
+                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
                     ? 'h-4 bg-indigo-500 animate-voice-bar-3'
                     : 'h-3 bg-slate-300 dark:bg-slate-700'
                 }`}
               />
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking'
+                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
                     ? 'h-6 bg-indigo-500 animate-voice-bar-4'
                     : 'h-2 bg-slate-300 dark:bg-slate-700'
                 }`}
               />
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking'
+                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
                     ? 'h-3 bg-indigo-500 animate-voice-bar-5'
                     : 'h-1.5 bg-slate-300 dark:bg-slate-700'
                 }`}
@@ -561,16 +615,16 @@ export function ConversationRoom({
             {/* Status Label */}
             <div className="text-center">
               <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                {voiceState === 'listening'
-                  ? 'Listening... (Speak or tap again to finish)'
-                  : voiceState === 'processing'
-                  ? 'Analyzing & formulating answer...'
+                {aiStatus === 'generating'
+                  ? `Thinking with ${activeModel}... (Click orb to cancel)`
+                  : voiceState === 'listening'
+                  ? 'Listening... (Speak or tap again to send)'
                   : voiceState === 'speaking'
                   ? 'Yo Siri speaking... (Tap orb to interrupt)'
                   : 'Tap orb to speak'}
               </p>
               <p className="text-[10px] text-slate-400">
-                Phase 1 UI Prototype • Voice & Ollama simulated for interface testing
+                Connected to local Ollama ({activeModel}) • 100% offline & private
               </p>
             </div>
           </div>
@@ -585,17 +639,28 @@ export function ConversationRoom({
               value={textInput}
               onChange={(e) => setTextInput(e.target.value)}
               placeholder="Or type your spoken response here..."
-              disabled={!sessionActive}
-              className="flex-1 px-4 py-2.5 rounded-xl text-sm bg-white dark:bg-[#1E293B] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 transition-colors"
+              disabled={!sessionActive || aiStatus === 'generating'}
+              className="flex-1 px-4 py-2.5 rounded-xl text-sm bg-white dark:bg-[#1E293B] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 transition-colors disabled:opacity-50"
             />
-            <button
-              type="submit"
-              disabled={!textInput.trim() || !sessionActive}
-              className="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-              aria-label="Send message"
-            >
-              <SendIcon size={18} />
-            </button>
+            {aiStatus === 'generating' ? (
+              <button
+                type="button"
+                onClick={cancelGeneration}
+                className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-medium text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 flex items-center gap-1.5"
+              >
+                <SquareIcon size={14} />
+                <span>Cancel</span>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!textInput.trim() || !sessionActive}
+                className="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                aria-label="Send message"
+              >
+                <SendIcon size={18} />
+              </button>
+            )}
           </form>
         </div>
       </div>
@@ -705,10 +770,10 @@ export function ConversationRoom({
                 <div className="p-6 text-center text-xs text-slate-400 space-y-2 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
                   <InfoIcon size={24} className="mx-auto text-slate-400" />
                   <p className="font-medium text-slate-600 dark:text-slate-300">
-                    Awaiting your first spoken response
+                    Awaiting your response
                   </p>
                   <p className="text-[11px]">
-                    Tap the microphone orb and speak. Yo Siri will analyze grammar, pacing, and vocabulary in real time.
+                    Speak or type your answer. Yo Siri ({activeModel}) will respond naturally and give immediate grammar, pacing, and vocabulary feedback.
                   </p>
                 </div>
               )}
@@ -722,15 +787,15 @@ export function ConversationRoom({
           <ul className="space-y-2 text-slate-600 dark:text-slate-400">
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1.5 shrink-0" />
-              <span>Minimize filler words (&quot;um&quot;, &quot;like&quot;, &quot;you know&quot;)</span>
+              <span>Listen actively and answer the specific question asked</span>
             </li>
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1.5 shrink-0" />
-              <span>Use precise technical verbs when explaining architecture</span>
+              <span>Use precise verbs and keep responses to 2-3 sentences</span>
             </li>
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1.5 shrink-0" />
-              <span>Maintain steady breathing and pauses between thoughts</span>
+              <span>Notice grammar corrections and reuse the upgraded phrases</span>
             </li>
           </ul>
         </div>
@@ -765,7 +830,7 @@ export function ConversationRoom({
             </div>
 
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Great practice session! You demonstrated good conversational momentum. Today&apos;s speaking time will be credited to your daily target once live tracking starts in Phase 2.
+              Great practice session with <strong>{activeModel}</strong>! You maintained good conversational momentum. Your speaking time and feedback will be logged for your streak.
             </p>
 
             <div className="flex items-center gap-3 pt-2">
