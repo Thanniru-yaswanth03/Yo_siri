@@ -4,7 +4,17 @@ export type PracticeMode =
   | 'english-lab'
   | 'roleplay';
 
-export type SessionVoiceState = 'idle' | 'listening' | 'processing' | 'speaking';
+export type SessionVoiceState =
+  | 'idle'
+  | 'requestingPermission'
+  | 'listening'
+  | 'processing'
+  | 'generating'
+  | 'speaking'
+  | 'paused'
+  | 'error';
+
+export type ConversationState = SessionVoiceState;
 
 export interface GrammarFeedback {
   original: string;

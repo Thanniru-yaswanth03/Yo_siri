@@ -4,7 +4,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import {
   PracticeMode,
-  SessionVoiceState,
   ConversationMessage,
   TurnFeedback,
 } from '@/types';
@@ -23,8 +22,12 @@ import {
   BotIcon,
   UserIcon,
   InfoIcon,
+  Volume2Icon,
+  VolumeXIcon,
 } from '@/components/icons';
 import { useAIEngine } from '@/hooks/useAIEngine';
+import { useVoiceEngine } from '@/hooks/useVoiceEngine';
+import { canSubmitInput } from '@/lib/voice';
 
 interface ConversationRoomProps {
   mode: PracticeMode;
@@ -49,7 +52,6 @@ export function ConversationRoom({
 }: ConversationRoomProps) {
   // Session State
   const [sessionActive, setSessionActive] = useState<boolean>(true);
-  const [voiceState, setVoiceState] = useState<SessionVoiceState>('idle');
   const [secondsElapsed, setSecondsElapsed] = useState<number>(0);
   const [timerRunning, setTimerRunning] = useState<boolean>(true);
 
@@ -73,6 +75,7 @@ export function ConversationRoom({
   const [feedbackOpen, setFeedbackOpen] = useState(true);
   const [sessionSummaryOpen, setSessionSummaryOpen] = useState(false);
   const [activeAudioMessageId, setActiveAudioMessageId] = useState<string | null>(null);
+  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState<boolean>(false);
 
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -92,6 +95,38 @@ export function ConversationRoom({
   } = useAIEngine({
     mode,
     scenarioContext: scenarioDetails,
+  });
+
+  // Voice Engine Hook
+  const {
+    state: voiceState,
+    stateLabel: voiceStateLabel,
+    transcript: liveTranscript,
+    setTranscript: setLiveTranscript,
+    error: voiceError,
+    clearError: clearVoiceError,
+    isSpeechRecognitionSupported: isRecSupported,
+    isSpeechSynthesisSupported: isSynthSupported,
+    availableVoices,
+    selectedVoiceURI,
+    setVoiceURI,
+    speechRate,
+    setSpeechRate,
+    autoSpeak,
+    setAutoSpeak,
+    startListening,
+    stopListening,
+    speakResponse,
+    pauseSpeech,
+    resumeSpeech,
+    interrupt,
+    cancelSession: cancelVoiceSession,
+    retry: retryVoice,
+    setConversationState,
+  } = useVoiceEngine({
+    onTranscriptComplete: (finalText) => {
+      setTextInput(finalText);
+    },
   });
 
   // Live Timer
@@ -128,7 +163,8 @@ export function ConversationRoom({
   const handleEndSession = () => {
     setTimerRunning(false);
     setSessionActive(false);
-    setVoiceState('idle');
+    cancelVoiceSession();
+    setActiveAudioMessageId(null);
     setSessionSummaryOpen(true);
   };
 
@@ -137,7 +173,8 @@ export function ConversationRoom({
     setSecondsElapsed(0);
     setTimerRunning(true);
     setSessionActive(true);
-    setVoiceState('idle');
+    cancelVoiceSession();
+    setActiveAudioMessageId(null);
     setSessionSummaryOpen(false);
     setMessages([
       {
@@ -153,7 +190,12 @@ export function ConversationRoom({
 
   // Dispatch turn to local AI model
   const executeTurn = async (userText: string) => {
-    if (!userText.trim() || !sessionActive) return;
+    if (!userText.trim() || !sessionActive || !canSubmitInput(voiceState)) return;
+
+    // Halt active speech or recognition immediately
+    stopListening();
+    interrupt();
+    setActiveAudioMessageId(null);
 
     const userMsgId = `user-${Date.now()}`;
     const newUserMsg: ConversationMessage = {
@@ -165,7 +207,9 @@ export function ConversationRoom({
 
     const updatedMessages = [...messages, newUserMsg];
     setMessages(updatedMessages);
-    setVoiceState('processing');
+    setTextInput('');
+    setLiveTranscript('');
+    setConversationState('processing');
 
     // Retrieve preferences
     let strictness: 'supportive' | 'balanced' | 'rigorous' = 'balanced';
@@ -178,6 +222,7 @@ export function ConversationRoom({
       // fallback
     }
 
+    setConversationState('generating');
     const aiResult = await sendTurn(
       updatedMessages,
       strictness,
@@ -197,52 +242,64 @@ export function ConversationRoom({
 
       setMessages((prev) => [...prev, newAssistantMsg]);
       setActiveFeedback(aiResult.coaching);
-      setVoiceState('speaking');
 
-      // Visual waveform indicator
-      setTimeout(() => {
-        setVoiceState('idle');
-      }, 3500);
+      // Auto-speak response using browser SpeechSynthesis
+      if (autoSpeak && isSynthSupported) {
+        setActiveAudioMessageId(assistantMsgId);
+        speakResponse(aiResult.spokenResponse, () => {
+          setActiveAudioMessageId(null);
+        });
+      } else {
+        setConversationState('idle');
+      }
     } else {
-      // Generation failed or was cancelled
-      setVoiceState('idle');
+      setConversationState('error');
     }
   };
 
   // Handle Voice / Mic button click
   const handleMicClick = () => {
-    if (aiStatus === 'generating') {
+    // 1. If generating or processing, cancel generation
+    if (voiceState === 'generating' || voiceState === 'processing' || aiStatus === 'generating') {
       cancelGeneration();
-      setVoiceState('idle');
+      cancelVoiceSession();
+      setConversationState('idle');
       return;
     }
 
-    if (voiceState === 'listening') {
-      // Finished speaking prompt (in Phase 2 this submits a test spoken turn)
-      setVoiceState('processing');
-      const sampleSpokenTurns: Record<PracticeMode, string> = {
-        conversation:
-          'I really enjoy building software with local AI because it guarantees data privacy and works completely offline.',
-        interview:
-          'In my previous role, I designed a caching layer that reduced database load by 35% during peak traffic spikes.',
-        'english-lab':
-          'If I would have known about the deadline earlier, I will have finished the presentation in time.',
-        roleplay:
-          'I understand the budget constraints, but based on my recent delivery of the auth system, a 10% raise reflects my contribution.',
-      };
+    // 2. If speaking or paused, interrupt speech
+    if (voiceState === 'speaking' || voiceState === 'paused') {
+      interrupt();
+      setActiveAudioMessageId(null);
+      return;
+    }
 
-      executeTurn(sampleSpokenTurns[mode]);
-    } else if (voiceState === 'idle') {
-      setVoiceState('listening');
-    } else if (voiceState === 'speaking') {
-      setVoiceState('idle');
+    // 3. If currently listening, stop recognition and send if there's text
+    if (voiceState === 'listening') {
+      stopListening();
+      const textToSend = textInput.trim() || liveTranscript.trim();
+      if (textToSend) {
+        executeTurn(textToSend);
+      }
+      return;
+    }
+
+    // 4. If in error, retry
+    if (voiceState === 'error') {
+      retryVoice();
+      return;
+    }
+
+    // 5. If idle, start listening
+    if (voiceState === 'idle') {
+      startListening();
     }
   };
 
   // Handle Text input submission
   const handleTextSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!textInput.trim() || !sessionActive || aiStatus === 'generating') return;
+    if (!textInput.trim() || !sessionActive || !canSubmitInput(voiceState)) return;
     const text = textInput;
     setTextInput('');
     executeTurn(text);
@@ -250,7 +307,7 @@ export function ConversationRoom({
 
   // Handle Retry
   const handleRetry = async () => {
-    setVoiceState('processing');
+    setConversationState('processing');
     const aiResult = await retryLastTurn();
     if (aiResult) {
       const assistantMsgId = `asst-${Date.now()}`;
@@ -265,23 +322,32 @@ export function ConversationRoom({
 
       setMessages((prev) => [...prev, newAssistantMsg]);
       setActiveFeedback(aiResult.coaching);
-      setVoiceState('speaking');
-      setTimeout(() => {
-        setVoiceState('idle');
-      }, 3500);
+      if (autoSpeak && isSynthSupported) {
+        setActiveAudioMessageId(assistantMsgId);
+        speakResponse(aiResult.spokenResponse, () => {
+          setActiveAudioMessageId(null);
+        });
+      } else {
+        setConversationState('idle');
+      }
     } else {
-      setVoiceState('idle');
+      setConversationState('error');
     }
   };
 
-  // Simulated audio replay for any message
-  const playAudioSimulation = (messageId: string) => {
-    setActiveAudioMessageId(messageId);
-    setVoiceState('speaking');
-    setTimeout(() => {
-      setActiveAudioMessageId(null);
-      setVoiceState('idle');
-    }, 3000);
+  // Real audio playback for any assistant message
+  const handlePlayAudioMessage = (msg: ConversationMessage) => {
+    if (activeAudioMessageId === msg.id && voiceState === 'speaking') {
+      pauseSpeech();
+    } else if (activeAudioMessageId === msg.id && voiceState === 'paused') {
+      resumeSpeech();
+    } else {
+      interrupt();
+      setActiveAudioMessageId(msg.id);
+      speakResponse(msg.content, () => {
+        setActiveAudioMessageId(null);
+      });
+    }
   };
 
   return (
@@ -331,6 +397,92 @@ export function ConversationRoom({
               <span>{formatTime(secondsElapsed)}</span>
             </div>
 
+            {/* Voice Mute / Unmute Button */}
+            <button
+              type="button"
+              onClick={() => setAutoSpeak(!autoSpeak)}
+              className={`p-1.5 rounded-lg border text-xs flex items-center gap-1 transition-colors ${
+                autoSpeak
+                  ? 'bg-indigo-50/70 dark:bg-indigo-950/40 border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400'
+                  : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400'
+              }`}
+              title={autoSpeak ? 'Voice output enabled (click to mute)' : 'Voice output muted (click to speak responses aloud)'}
+              aria-label={autoSpeak ? 'Mute AI voice output' : 'Enable AI voice output'}
+            >
+              {autoSpeak ? <Volume2Icon size={16} /> : <VolumeXIcon size={16} />}
+            </button>
+
+            {/* Voice Settings Dropdown Toggle */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setVoiceSettingsOpen(!voiceSettingsOpen)}
+                className={`px-2 py-1.5 rounded-lg border text-xs font-mono font-medium transition-colors ${
+                  voiceSettingsOpen
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-[#1E293B] text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+                title="Adjust speech rate and voice"
+                aria-label="Voice settings"
+              >
+                <span>{speechRate}x</span>
+              </button>
+
+              {/* Quick Voice Settings Tray */}
+              {voiceSettingsOpen && (
+                <div className="absolute right-0 top-full mt-2 w-64 p-3 rounded-xl bg-white dark:bg-[#172033] border border-slate-200 dark:border-slate-700 shadow-xl z-50 space-y-3 text-xs animate-in fade-in zoom-in-95 duration-150">
+                  <div>
+                    <span className="font-semibold text-slate-900 dark:text-white block mb-1.5">
+                      Speech Rate
+                    </span>
+                    <div className="grid grid-cols-4 gap-1">
+                      {[0.75, 1.0, 1.25, 1.5].map((rate) => (
+                        <button
+                          key={rate}
+                          type="button"
+                          onClick={() => {
+                            setSpeechRate(rate);
+                          }}
+                          className={`py-1 rounded text-center font-mono font-semibold transition-colors ${
+                            speechRate === rate
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                          }`}
+                        >
+                          {rate}x
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {availableVoices.length > 0 && (
+                    <div>
+                      <span className="font-semibold text-slate-900 dark:text-white block mb-1.5">
+                        Assistant Voice
+                      </span>
+                      <select
+                        value={selectedVoiceURI || ''}
+                        onChange={(e) => setVoiceURI(e.target.value || null)}
+                        className="w-full px-2 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="">Default Natural Voice</option>
+                        {availableVoices.slice(0, 10).map((v) => (
+                          <option key={v.voiceURI} value={v.voiceURI}>
+                            {v.name.slice(0, 28)} ({v.lang})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center text-[11px] text-slate-500">
+                    <span>Speech Synthesis</span>
+                    <span className="text-emerald-500 font-medium">Ready</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <button
               type="button"
               onClick={togglePauseSession}
@@ -376,6 +528,54 @@ export function ConversationRoom({
             <span className="font-medium text-slate-500 dark:text-slate-400">
               Level: {scenarioDetails.difficulty}
             </span>
+          </div>
+        )}
+
+        {/* Unsupported Speech Recognition Notice */}
+        {!isRecSupported && (
+          <div className="px-6 py-2 bg-slate-100/80 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700/60 flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
+            <div className="flex items-center gap-2">
+              <InfoIcon size={14} className="text-indigo-500 shrink-0" />
+              <span>
+                Speech recognition is not supported in this browser. Text mode is fully active, and assistant responses will still be spoken aloud.
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Voice Recognition Error Banner */}
+        {voiceError && (
+          <div className="m-4 p-4 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-xs space-y-2 animate-in fade-in duration-200">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2 font-bold text-amber-800 dark:text-amber-300">
+                <AlertCircleIcon size={16} />
+                <span>Microphone / Speech Notice</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {voiceError.retryable && (
+                  <button
+                    type="button"
+                    onClick={retryVoice}
+                    className="px-2.5 py-1 rounded bg-amber-600 text-white font-semibold hover:bg-amber-700 transition-colors"
+                  >
+                    Retry Mic
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={clearVoiceError}
+                  className="px-2 py-1 rounded border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+            <p className="text-slate-700 dark:text-slate-300">{voiceError.message}</p>
+            {voiceError.advice && (
+              <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+                💡 {voiceError.advice}
+              </p>
+            )}
           </div>
         )}
 
@@ -449,17 +649,53 @@ export function ConversationRoom({
                   >
                     <p>{msg.content}</p>
 
-                    {/* Audio replay button for assistant */}
+                    {/* Audio playback controls for assistant */}
                     {isAsst && (
                       <div className="mt-3 pt-2.5 border-t border-slate-200/60 dark:border-slate-700/60 flex items-center justify-between">
-                        <button
-                          type="button"
-                          onClick={() => playAudioSimulation(msg.id)}
-                          className="flex items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:underline focus:outline-none"
-                        >
-                          <PlayIcon size={12} className={isPlayingThis ? 'text-emerald-500' : ''} />
-                          <span>{isPlayingThis ? 'Playing audio...' : 'Replay audio'}</span>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handlePlayAudioMessage(msg)}
+                            className="flex items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:underline focus:outline-none"
+                            aria-label={
+                              isPlayingThis && voiceState === 'speaking'
+                                ? 'Pause speech'
+                                : isPlayingThis && voiceState === 'paused'
+                                ? 'Resume speech'
+                                : 'Play response aloud'
+                            }
+                          >
+                            {isPlayingThis && voiceState === 'speaking' ? (
+                              <>
+                                <PauseIcon size={12} className="text-amber-500" />
+                                <span className="font-semibold text-amber-500">Pause voice</span>
+                              </>
+                            ) : isPlayingThis && voiceState === 'paused' ? (
+                              <>
+                                <PlayIcon size={12} className="text-emerald-500" />
+                                <span className="font-semibold text-emerald-500">Resume voice</span>
+                              </>
+                            ) : (
+                              <>
+                                <PlayIcon size={12} />
+                                <span>Play aloud</span>
+                              </>
+                            )}
+                          </button>
+
+                          {isPlayingThis && (
+                            <button
+                              type="button"
+                              onClick={interrupt}
+                              className="text-xs text-rose-500 hover:underline flex items-center gap-1"
+                              title="Stop speech"
+                            >
+                              <SquareIcon size={10} />
+                              <span>Stop</span>
+                            </button>
+                          )}
+                        </div>
+
                         {msg.feedback && (
                           <button
                             type="button"
@@ -488,19 +724,32 @@ export function ConversationRoom({
             );
           })}
 
-          {/* Voice State Indicator Bubble (when listening/processing) */}
+          {/* Live Voice Recognition interim bubble */}
           {voiceState === 'listening' && (
             <div className="flex gap-3 max-w-md ml-auto flex-row-reverse animate-pulse">
-              <div className="w-8 h-8 rounded-full bg-violet-600 flex items-center justify-center text-white shrink-0">
+              <div className="w-8 h-8 rounded-full bg-rose-600 flex items-center justify-center text-white shrink-0 shadow-lg shadow-rose-500/30">
                 <MicIcon size={16} />
               </div>
-              <div className="p-3.5 rounded-2xl rounded-tr-sm bg-violet-600/10 border border-violet-500/30 text-violet-700 dark:text-violet-300 text-xs">
-                Listening to speech... (Tap microphone orb again to send)
+              <div className="p-3.5 rounded-2xl rounded-tr-sm bg-rose-500/10 border border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs">
+                <p className="font-semibold text-[11px] mb-1">Live voice recognition:</p>
+                <p className="italic font-medium">{liveTranscript || 'Listening... Speak into your microphone'}</p>
+                <p className="text-[10px] opacity-75 mt-1.5">Tap microphone orb or press Enter to send</p>
               </div>
             </div>
           )}
 
-          {(voiceState === 'processing' || aiStatus === 'generating') && (
+          {voiceState === 'requestingPermission' && (
+            <div className="flex gap-3 max-w-md ml-auto flex-row-reverse animate-pulse">
+              <div className="w-8 h-8 rounded-full bg-amber-500 flex items-center justify-center text-white shrink-0">
+                <MicIcon size={16} />
+              </div>
+              <div className="p-3.5 rounded-2xl rounded-tr-sm bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs">
+                Requesting microphone permission from your browser...
+              </div>
+            </div>
+          )}
+
+          {(voiceState === 'processing' || voiceState === 'generating' || aiStatus === 'generating') && (
             <div className="flex gap-3 max-w-md mr-auto">
               <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white shrink-0">
                 <BotIcon size={16} />
@@ -512,7 +761,11 @@ export function ConversationRoom({
                 <span>Yo Siri ({activeModel}) is thinking...</span>
                 <button
                   type="button"
-                  onClick={cancelGeneration}
+                  onClick={() => {
+                    cancelGeneration();
+                    cancelVoiceSession();
+                    setConversationState('idle');
+                  }}
                   className="ml-2 text-[11px] underline text-rose-500 hover:text-rose-600"
                 >
                   Cancel
@@ -531,42 +784,61 @@ export function ConversationRoom({
             <div className="relative flex items-center justify-center">
               {/* Pulsing ring in listening / speaking state */}
               {voiceState === 'listening' && (
-                <div className="absolute inset-0 w-20 h-20 -m-2 rounded-full bg-indigo-500/20 animate-ping" />
+                <div className="absolute inset-0 w-20 h-20 -m-2 rounded-full bg-rose-500/20 animate-ping" />
               )}
               {voiceState === 'speaking' && (
                 <div className="absolute inset-0 w-20 h-20 -m-2 rounded-full bg-violet-500/20 animate-pulse" />
               )}
+              {voiceState === 'requestingPermission' && (
+                <div className="absolute inset-0 w-20 h-20 -m-2 rounded-full bg-amber-500/20 animate-pulse" />
+              )}
 
-              {/* Main Microphone Button */}
+              {/* Main Microphone Button representing all 8 states */}
               <button
                 type="button"
                 onClick={handleMicClick}
                 disabled={!sessionActive}
                 className={`relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-200 shadow-lg focus:outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/50 ${
-                  aiStatus === 'generating'
+                  voiceState === 'generating' || aiStatus === 'generating'
                     ? 'bg-amber-600 text-white animate-pulse'
+                    : voiceState === 'requestingPermission'
+                    ? 'bg-amber-500 text-white animate-bounce'
                     : voiceState === 'listening'
                     ? 'bg-rose-600 text-white scale-110 shadow-rose-500/40 ring-4 ring-rose-500/20'
                     : voiceState === 'speaking'
                     ? 'bg-violet-600 text-white shadow-violet-500/40 ring-4 ring-violet-500/20'
+                    : voiceState === 'paused'
+                    ? 'bg-amber-600 text-white'
+                    : voiceState === 'error'
+                    ? 'bg-rose-600 text-white'
                     : 'bg-indigo-600 hover:bg-indigo-700 text-white hover:scale-105 shadow-indigo-500/30'
                 }`}
                 aria-label={
-                  aiStatus === 'generating'
-                    ? 'Cancel generation'
+                  voiceState === 'generating' || aiStatus === 'generating'
+                    ? 'Cancel AI generation'
                     : voiceState === 'listening'
-                    ? 'Stop listening'
+                    ? 'Stop listening and submit'
                     : voiceState === 'speaking'
-                    ? 'Interrupt assistant'
+                    ? 'Interrupt assistant speech'
+                    : voiceState === 'paused'
+                    ? 'Resume assistant speech'
+                    : voiceState === 'error'
+                    ? 'Retry microphone'
                     : 'Tap to speak'
                 }
               >
-                {aiStatus === 'generating' ? (
+                {voiceState === 'generating' || aiStatus === 'generating' ? (
                   <SquareIcon size={20} />
+                ) : voiceState === 'requestingPermission' ? (
+                  <MicIcon size={24} className="animate-pulse" />
                 ) : voiceState === 'listening' ? (
                   <SquareIcon size={24} />
                 ) : voiceState === 'speaking' ? (
                   <MicOffIcon size={24} />
+                ) : voiceState === 'paused' ? (
+                  <PlayIcon size={24} />
+                ) : voiceState === 'error' ? (
+                  <RotateCcwIcon size={24} />
                 ) : (
                   <MicIcon size={24} />
                 )}
@@ -577,35 +849,35 @@ export function ConversationRoom({
             <div className="flex items-center gap-1 h-6">
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
+                  voiceState === 'listening' || voiceState === 'speaking' || voiceState === 'generating' || aiStatus === 'generating'
                     ? 'h-5 bg-indigo-500 animate-voice-bar-1'
                     : 'h-1.5 bg-slate-300 dark:bg-slate-700'
                 }`}
               />
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
+                  voiceState === 'listening' || voiceState === 'speaking' || voiceState === 'generating' || aiStatus === 'generating'
                     ? 'h-6 bg-indigo-500 animate-voice-bar-2'
                     : 'h-2 bg-slate-300 dark:bg-slate-700'
                 }`}
               />
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
+                  voiceState === 'listening' || voiceState === 'speaking' || voiceState === 'generating' || aiStatus === 'generating'
                     ? 'h-4 bg-indigo-500 animate-voice-bar-3'
                     : 'h-3 bg-slate-300 dark:bg-slate-700'
                 }`}
               />
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
+                  voiceState === 'listening' || voiceState === 'speaking' || voiceState === 'generating' || aiStatus === 'generating'
                     ? 'h-6 bg-indigo-500 animate-voice-bar-4'
                     : 'h-2 bg-slate-300 dark:bg-slate-700'
                 }`}
               />
               <span
                 className={`w-1 rounded-full transition-all duration-150 ${
-                  voiceState === 'listening' || voiceState === 'speaking' || aiStatus === 'generating'
+                  voiceState === 'listening' || voiceState === 'speaking' || voiceState === 'generating' || aiStatus === 'generating'
                     ? 'h-3 bg-indigo-500 animate-voice-bar-5'
                     : 'h-1.5 bg-slate-300 dark:bg-slate-700'
                 }`}
@@ -615,21 +887,15 @@ export function ConversationRoom({
             {/* Status Label */}
             <div className="text-center">
               <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                {aiStatus === 'generating'
-                  ? `Thinking with ${activeModel}... (Click orb to cancel)`
-                  : voiceState === 'listening'
-                  ? 'Listening... (Speak or tap again to send)'
-                  : voiceState === 'speaking'
-                  ? 'Yo Siri speaking... (Tap orb to interrupt)'
-                  : 'Tap orb to speak'}
+                {voiceStateLabel}
               </p>
               <p className="text-[10px] text-slate-400">
-                Connected to local Ollama ({activeModel}) • 100% offline & private
+                {isRecSupported ? 'Speech recognition ready' : 'Text input mode'} • {isSynthSupported ? `Voice synthesis active (${speechRate}x)` : 'Audio output unavailable'}
               </p>
             </div>
           </div>
 
-          {/* Text Input Fallback Bar */}
+          {/* Text Input Fallback & Live Transcript Bar */}
           <form
             onSubmit={handleTextSubmit}
             className="w-full max-w-xl flex items-center gap-2 mt-1"
@@ -637,19 +903,40 @@ export function ConversationRoom({
             <input
               type="text"
               value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              placeholder="Or type your spoken response here..."
-              disabled={!sessionActive || aiStatus === 'generating'}
+              onChange={(e) => {
+                setTextInput(e.target.value);
+                setLiveTranscript(e.target.value);
+              }}
+              placeholder={
+                voiceState === 'listening'
+                  ? 'Listening... Your words appear here (or edit while speaking)...'
+                  : 'Type your spoken response or question here...'
+              }
+              disabled={!sessionActive || voiceState === 'generating' || aiStatus === 'generating'}
               className="flex-1 px-4 py-2.5 rounded-xl text-sm bg-white dark:bg-[#1E293B] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 transition-colors disabled:opacity-50"
             />
-            {aiStatus === 'generating' ? (
+            {voiceState === 'generating' || aiStatus === 'generating' ? (
               <button
                 type="button"
-                onClick={cancelGeneration}
+                onClick={() => {
+                  cancelGeneration();
+                  cancelVoiceSession();
+                  setConversationState('idle');
+                }}
                 className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-medium text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 flex items-center gap-1.5"
               >
                 <SquareIcon size={14} />
                 <span>Cancel</span>
+              </button>
+            ) : voiceState === 'speaking' ? (
+              <button
+                type="button"
+                onClick={interrupt}
+                className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-medium text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 flex items-center gap-1.5"
+                title="Interrupt AI voice"
+              >
+                <MicOffIcon size={14} />
+                <span>Interrupt</span>
               </button>
             ) : (
               <button

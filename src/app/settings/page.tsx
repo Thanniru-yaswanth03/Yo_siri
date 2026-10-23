@@ -10,7 +10,16 @@ import {
   RotateCcwIcon,
   AlertCircleIcon,
   InfoIcon,
+  Volume2Icon,
+  PlayIcon,
+  MicIcon,
 } from '@/components/icons';
+import {
+  isSpeechRecognitionSupported,
+  isSpeechSynthesisSupported,
+  SpeechVoiceOption,
+  BrowserSpeechSynthesizer,
+} from '@/lib/voice';
 
 type Strictness = 'supportive' | 'balanced' | 'rigorous';
 type SpeakingPace = 'slow' | 'normal' | 'fast';
@@ -60,6 +69,36 @@ export default function SettingsPage() {
     getStoredValue<string>('yo-siri-model', 'llama3.2:1b')
   );
 
+  // Phase 3: Voice Engine settings
+  const [speechRate, setSpeechRate] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1.0;
+    try {
+      const saved = localStorage.getItem('yo-siri-rate');
+      return saved ? Number(saved) : 1.0;
+    } catch {
+      return 1.0;
+    }
+  });
+
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>(() =>
+    getStoredValue<string>('yo-siri-voice', '')
+  );
+
+  const [autoSpeak, setAutoSpeak] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      const saved = localStorage.getItem('yo-siri-autospeak');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [voices, setVoices] = useState<SpeechVoiceOption[]>([]);
+  const [testingVoice, setTestingVoice] = useState<boolean>(false);
+  const [recogSupported] = useState<boolean>(() => isSpeechRecognitionSupported());
+  const [synthSupported] = useState<boolean>(() => isSpeechSynthesisSupported());
+
   const [installedModels, setInstalledModels] = useState<string[]>([]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [testingOllama, setTestingOllama] = useState<boolean>(false);
@@ -68,6 +107,25 @@ export default function SettingsPage() {
     message: string;
     warning?: string;
   } | null>(null);
+
+  // Probe voice support and load available voices
+  useEffect(() => {
+    if (isSpeechSynthesisSupported()) {
+      const synth = new BrowserSpeechSynthesizer();
+      const load = () => {
+        const list = synth.getEnglishVoices();
+        setVoices(list);
+        if (list.length > 0 && !selectedVoiceURI) {
+          const def = list.find((v) => v.isDefault) || list[0];
+          setSelectedVoiceURI(def.voiceURI);
+        }
+      };
+      load();
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = load;
+      }
+    }
+  }, [selectedVoiceURI]);
 
   // Probe available models from API on mount
   useEffect(() => {
@@ -85,6 +143,21 @@ export default function SettingsPage() {
     fetchInstalledModels();
   }, [ollamaEndpoint]);
 
+  const handleTestVoice = () => {
+    if (!isSpeechSynthesisSupported()) return;
+    setTestingVoice(true);
+    const synth = new BrowserSpeechSynthesizer();
+    synth.setRate(speechRate);
+    synth.setVoiceURI(selectedVoiceURI);
+    synth.speak(
+      'Hello! I am Yo Siri, your personal AI voice coach. How does this pace and tone sound to you?',
+      {
+        onEnd: () => setTestingVoice(false),
+        onError: () => setTestingVoice(false),
+      }
+    );
+  };
+
   const handleSave = () => {
     try {
       localStorage.setItem('yo-siri-goal', String(dailyGoalMinutes));
@@ -93,6 +166,9 @@ export default function SettingsPage() {
       localStorage.setItem('yo-siri-accent', targetAccent);
       localStorage.setItem('yo-siri-endpoint', ollamaEndpoint);
       localStorage.setItem('yo-siri-model', ollamaModel);
+      localStorage.setItem('yo-siri-rate', String(speechRate));
+      localStorage.setItem('yo-siri-voice', selectedVoiceURI);
+      localStorage.setItem('yo-siri-autospeak', String(autoSpeak));
       setSaveStatus('Preferences saved successfully!');
       setTimeout(() => setSaveStatus(null), 3000);
     } catch {
@@ -146,6 +222,9 @@ export default function SettingsPage() {
     setTargetAccent('Standard American');
     setOllamaEndpoint('http://127.0.0.1:11434');
     setOllamaModel('llama3.2:1b');
+    setSpeechRate(1.0);
+    setSelectedVoiceURI('');
+    setAutoSpeak(true);
     setSaveStatus('Reset to default settings');
     setTimeout(() => setSaveStatus(null), 3000);
   };
@@ -276,7 +355,156 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      {/* Section 4: Local Ollama Model Configuration */}
+      {/* Section 4: Voice Engine & Speech Synthesis */}
+      <section className="bg-white dark:bg-[#0F172A] border border-slate-200 dark:border-[#1E293B] rounded-2xl p-6 shadow-sm space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider text-xs">
+              Voice Engine & Speech Synthesis
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Control browser speech recognition, assistant voice timbre, playback cadence, and auto-speak behavior.
+            </p>
+          </div>
+          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-900/40">
+            Phase 3 Engine
+          </span>
+        </div>
+
+        {/* Browser Capability Badges */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#161F30] border border-slate-200 dark:border-slate-800 flex items-start gap-2.5">
+            <MicIcon size={16} className={`mt-0.5 shrink-0 ${recogSupported ? 'text-emerald-500' : 'text-amber-500'}`} />
+            <div>
+              <div className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                <span>Speech Recognition</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+                    recogSupported
+                      ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                  }`}
+                >
+                  {recogSupported ? 'Supported' : 'Fallback only'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {recogSupported
+                  ? 'Native Web Speech API active. Voice listening is fully enabled.'
+                  : 'Web Speech not detected in this browser. Text input remains active.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#161F30] border border-slate-200 dark:border-slate-800 flex items-start gap-2.5">
+            <Volume2Icon size={16} className={`mt-0.5 shrink-0 ${synthSupported ? 'text-emerald-500' : 'text-amber-500'}`} />
+            <div>
+              <div className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                <span>Speech Synthesis</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+                    synthSupported
+                      ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                  }`}
+                >
+                  {synthSupported ? 'Supported' : 'Not supported'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {synthSupported
+                  ? `${voices.length} voice(s) available on this device.`
+                  : 'Speech synthesis is unavailable in this environment.'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Voice Selection & Audition */}
+        <div className="space-y-3">
+          <label className="font-semibold text-slate-700 dark:text-slate-300 text-xs block">
+            Assistant Voice Selection
+          </label>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <select
+              value={selectedVoiceURI}
+              onChange={(e) => setSelectedVoiceURI(e.target.value)}
+              className="flex-1 px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#161F30] border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            >
+              {voices.length === 0 ? (
+                <option value="">Default system voice</option>
+              ) : (
+                voices.map((v) => (
+                  <option key={v.voiceURI} value={v.voiceURI}>
+                    {v.name} ({v.lang}) {v.isDefault ? '— System Default' : ''}
+                  </option>
+                ))
+              )}
+            </select>
+
+            <button
+              type="button"
+              onClick={handleTestVoice}
+              disabled={testingVoice || !synthSupported}
+              className="px-4 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-800/40 text-indigo-700 dark:text-indigo-300 text-xs font-semibold transition-colors flex items-center justify-center gap-2 shrink-0 disabled:opacity-50"
+            >
+              <PlayIcon size={14} className={testingVoice ? 'animate-spin' : ''} />
+              <span>{testingVoice ? 'Auditioning Voice...' : 'Audition Voice'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Speech Rate Controls */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="font-semibold text-slate-700 dark:text-slate-300 text-xs">
+              Speech Output Rate: <span className="font-mono text-indigo-600 dark:text-indigo-400">{speechRate.toFixed(2)}x</span>
+            </label>
+            <span className="text-[11px] text-slate-500">
+              {speechRate <= 0.85 ? 'Slow (Learner pace)' : speechRate <= 1.1 ? 'Normal' : 'Fast (Advanced)'}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {[0.75, 1.0, 1.25, 1.5].map((rate) => (
+              <button
+                key={rate}
+                type="button"
+                onClick={() => setSpeechRate(rate)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all ${
+                  speechRate === rate
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                    : 'bg-slate-50 dark:bg-[#161F30] border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-300'
+                }`}
+              >
+                {rate}x
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Auto-Speak Toggle */}
+        <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+          <label className="flex items-center gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoSpeak}
+              onChange={(e) => setAutoSpeak(e.target.checked)}
+              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700"
+            />
+            <div>
+              <span className="text-xs font-semibold text-slate-900 dark:text-white block">
+                Auto-speak AI responses
+              </span>
+              <span className="text-[11px] text-slate-500 block">
+                When enabled, Yo Siri will automatically synthesize and read aloud every generated turn.
+              </span>
+            </div>
+          </label>
+        </div>
+      </section>
+
+      {/* Section 5: Local Ollama Model Configuration */}
       <section className="bg-white dark:bg-[#0F172A] border border-slate-200 dark:border-[#1E293B] rounded-2xl p-6 shadow-sm space-y-5">
         <div className="flex items-center justify-between">
           <div>
