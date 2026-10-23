@@ -201,3 +201,6 @@ export class BrowserSpeechSynthesizer {
     this.currentUtterance = null;
   }
 }
+
+export const speechSynthesizer = new BrowserSpeechSynthesizer();
+

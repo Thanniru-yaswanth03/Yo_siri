@@ -1,109 +1,555 @@
 'use client';
 
-import React, { useState } from 'react';
-import { ConversationRoom } from '@/components/conversation/ConversationRoom';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  LabCategory,
+  LabTurnEvaluation,
+  RetryComparison,
+  AdaptiveDrill,
+  PersonalWeaknessTracker,
+} from '@/lib/english-lab';
+import { useVoiceEngine } from '@/hooks/useVoiceEngine';
+import {
+  LabFeedbackCard,
+  AttemptComparisonModal,
+  WeaknessTrackerPanel,
+  OneMinuteChallengeTimer,
+} from '@/components/english-lab';
+import { MicIcon, MicOffIcon, Volume2Icon, RotateCcwIcon } from '@/components/icons';
 
-interface LabModule {
-  id: string;
+interface LabModuleConfig {
+  id: LabCategory;
   title: string;
   subtitle: string;
-  targetFocus: string;
-  drillQuestion: string;
-  objective: string;
+  badge: string;
+  defaultPrompt: string;
+  focusHint: string;
+  isTimed?: boolean;
+  timerDuration?: number;
 }
 
-const labModules: LabModule[] = [
+const LAB_MODULES: LabModuleConfig[] = [
   {
-    id: 'grammar-clinic',
-    title: 'Grammar Clinic: Conditionals & Tenses',
-    subtitle: 'Master complex past and hypothetical structures',
-    targetFocus: 'Third Conditionals & Past Perfect',
-    drillQuestion:
-      'Welcome to the Grammar Clinic. Today’s focus is on hypothetical past situations. Imagine an outage happened last week because tests were skipped. Complete and speak this thought: "If we had run the integration suite before deployment, we would have..." and explain what would have happened.',
-    objective: 'Speak using correct conditional forms without mixing past and present modals.',
+    id: 'grammar',
+    title: 'Grammar Clinic',
+    subtitle: 'Conditionals, tenses, and verb agreements',
+    badge: 'Grammar Precision',
+    defaultPrompt:
+      'Imagine an outage happened yesterday because automated tests were skipped. Complete and speak this thought: "If we had run the test suite before deploying to production, we would have..." and explain what the outcome would have been.',
+    focusHint: 'Maintain strict third-conditional structure (If + had + past participle, would have + past participle).',
   },
   {
-    id: 'vocab-refinement',
-    title: 'Vocabulary: Professional Articulation',
-    subtitle: 'Upgrade basic verbs and adjectives into high-impact words',
-    targetFocus: 'Impact Verbs & Nuanced Adjectives',
-    drillQuestion:
-      'Let’s test your vocabulary range. Instead of saying "I fixed a big problem and made the app fast", describe a recent debugging win using words like "diagnosed", "mitigated", "streamlined", or "refactored". Go ahead!',
-    objective: 'Incorporate at least two professional upgrade verbs naturally in your response.',
+    id: 'natural-phrasing',
+    title: 'Natural Phrasing',
+    subtitle: 'Idiomatic expressions & conversational flow',
+    badge: 'Native Phrasing',
+    defaultPrompt:
+      'Describe how your team resolves architectural disagreements. Instead of literal word-for-word translation, use natural expressions like "we hash it out", "meet in the middle", or "weigh the trade-offs".',
+    focusHint: 'Focus on natural spoken English idioms without sounding overly formal or rigid.',
   },
   {
-    id: 'concise-tech',
-    title: 'Concise Technical Explanation',
-    subtitle: 'Eliminate fluff and explain complex systems simply',
-    targetFocus: 'Clarity & Economy of Words',
-    drillQuestion:
-      'Here is your 60-second clarity challenge: Explain the core difference between SQL and NoSQL databases to a non-technical manager in under three sentences. Ready? Speak when you are ready.',
-    objective: 'Deliver an accurate definition without using confusing acronyms or exceeding 3 sentences.',
+    id: 'vocabulary',
+    title: 'Vocabulary Boost',
+    subtitle: 'Impact verbs & precise terminology',
+    badge: 'Professional Lexicon',
+    defaultPrompt:
+      'Explain a recent performance optimization or refactor. Replace basic phrases like "I made the code fast" with high-impact verbs like "diagnosed", "streamlined", "mitigated", or "refactored".',
+    focusHint: 'Incorporate at least two distinct professional upgrade verbs naturally.',
+  },
+  {
+    id: 'conversational',
+    title: 'Conversational Fluency',
+    subtitle: 'Casual confidence, warmth & transitions',
+    badge: 'Social & Chat',
+    defaultPrompt:
+      'You are meeting a new colleague at a tech conference mixer. Introduce yourself, mention what you are currently building, and ask an open-ended question to kick off an engaging chat.',
+    focusHint: 'Speak with warmth, conversational transitions, and natural interpersonal rhythm.',
+  },
+  {
+    id: 'conciseness',
+    title: 'Conciseness Training',
+    subtitle: 'Eliminate fluff, state thoughts in 2-3 sentences',
+    badge: 'Economy of Words',
+    defaultPrompt:
+      'Explain the fundamental difference between relational and document databases in exactly two or three crisp sentences. No filler words or unnecessary background.',
+    focusHint: 'Deliver your complete definition in under 45 words.',
+    isTimed: true,
+    timerDuration: 45,
   },
   {
     id: 'filler-elimination',
     title: 'Filler-Word Elimination',
-    subtitle: 'Replace "um", "uh", "like" with purposeful silence',
-    targetFocus: 'Pausing & Cadence Control',
-    drillQuestion:
-      'We are going to train purposeful pauses. Tell me what your morning routine looks like before you start coding. Take a one-second pause between each activity rather than saying "and then", "like", or "uh". Start now.',
-    objective: 'Maintain rhythm with silent pauses instead of verbal crutches.',
+    subtitle: 'Replace "um", "uh", "like" with purposeful pauses',
+    badge: 'Vocal Presence',
+    defaultPrompt:
+      'Walk me through your morning startup routine before you begin your deep work. Train inserting a 1-second silent pause between distinct thoughts instead of using "and then", "like", or "uh".',
+    focusHint: 'Take purposeful, silent breaths instead of verbal crutches.',
+  },
+  {
+    id: 'sentence-structure',
+    title: 'Sentence Structure',
+    subtitle: 'Vary sentence lengths & active voice',
+    badge: 'Syntactic Variety',
+    defaultPrompt:
+      'Explain why continuous integration is valuable. Deliberately start your response with a short punchy sentence, follow with a compound sentence explaining the mechanism, and conclude with a result.',
+    focusHint: 'Vary rhythm: short sentence → compound sentence → concluding sentence.',
+  },
+  {
+    id: 'one-minute-challenge',
+    title: '1-Minute Challenge',
+    subtitle: 'Timed 60-second structured speaking sprint',
+    badge: 'Sprint Drill',
+    defaultPrompt:
+      'Pitch your favorite open-source library or developer tool. You have exactly 60 seconds: explain what problem it solves, why you love using it, and who should adopt it today.',
+    focusHint: 'Aim for 100-130 spoken words with a distinct beginning, middle, and end before the timer expires.',
+    isTimed: true,
+    timerDuration: 60,
+  },
+  {
+    id: 'adaptive-drill',
+    title: 'Adaptive Drill',
+    subtitle: 'Generated from your personal weakness profile',
+    badge: 'Personalized',
+    defaultPrompt:
+      'Explain a complex technical concept you mastered recently using the 4-part structure: 1. The Core Problem, 2. Your Specific Approach, 3. Measurable Result, 4. Key Takeaways.',
+    focusHint: 'Tailored specifically to address recurring mistakes recorded in your profile.',
   },
 ];
 
 export default function EnglishLabPage() {
-  const [selectedModule, setSelectedModule] = useState<LabModule>(labModules[0]);
+  const [activeTab, setActiveTab] = useState<'practice' | 'profile'>('practice');
+  const [selectedModule, setSelectedModule] = useState<LabModuleConfig>(LAB_MODULES[0]);
+  const [promptText, setPromptText] = useState<string>(LAB_MODULES[0].defaultPrompt);
+  const [userAnswerInput, setUserAnswerInput] = useState<string>('');
+
+  // Evaluation & Retry States
+  const [isEvaluating, setIsEvaluating] = useState<boolean>(false);
+  const [currentEvaluation, setCurrentEvaluation] = useState<LabTurnEvaluation | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Retry Loop states
+  const [isRetryMode, setIsRetryMode] = useState<boolean>(false);
+  const [attempt1Answer, setAttempt1Answer] = useState<string>('');
+  const [retryComparison, setRetryComparison] = useState<RetryComparison | null>(null);
+  const [showComparisonModal, setShowComparisonModal] = useState<boolean>(false);
+
+  // 1-Minute Challenge Timer state
+  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
+
+  // Session reference for auditable evidence
+  const sessionRef = useRef<string>('session-lab');
+
+  useEffect(() => {
+    sessionRef.current = `session-${Date.now().toString(36)}`;
+  }, []);
+
+  // Hook into Phase 3 Voice Engine
+  const {
+    state: conversationState,
+    startListening,
+    stopListening,
+    speakResponse,
+    isSpeechRecognitionSupported,
+  } = useVoiceEngine({
+    defaultRate: 1.0,
+    onTranscriptComplete: (finalText) => {
+      setUserAnswerInput(finalText);
+    },
+  });
+
+  const isListening = conversationState === 'listening';
+
+  // Synchronize prompt when switching preset module
+  const handleSelectModule = (mod: LabModuleConfig) => {
+    setSelectedModule(mod);
+    setPromptText(mod.defaultPrompt);
+    setUserAnswerInput('');
+    setCurrentEvaluation(null);
+    setIsRetryMode(false);
+    setIsTimerRunning(false);
+  };
+
+  // Launch targeted adaptive drill from WeaknessTrackerPanel
+  const handleSelectAdaptiveDrill = (drill: AdaptiveDrill) => {
+    const adaptiveMod = LAB_MODULES.find((m) => m.id === 'adaptive-drill') || LAB_MODULES[0];
+    setSelectedModule({
+      ...adaptiveMod,
+      title: drill.title,
+      defaultPrompt: drill.promptQuestion,
+      focusHint: drill.targetObjective,
+      isTimed: Boolean(drill.timerSeconds),
+      timerDuration: drill.timerSeconds || 60,
+    });
+    setPromptText(drill.promptQuestion);
+    setUserAnswerInput('');
+    setCurrentEvaluation(null);
+    setIsRetryMode(false);
+    setIsTimerRunning(false);
+    setActiveTab('practice');
+  };
+
+  // Submit Answer for Evaluation
+  const handleSubmitAnswer = async () => {
+    const answer = userAnswerInput.trim();
+    if (!answer) {
+      setErrorMsg('Please speak or type an answer before requesting evaluation.');
+      return;
+    }
+
+    setErrorMsg(null);
+    setIsEvaluating(true);
+    if (isListening) stopListening();
+    if (isTimerRunning) setIsTimerRunning(false);
+
+    try {
+      // 1. If in Retry Mode, compare Attempt 1 vs Attempt 2
+      if (isRetryMode && attempt1Answer) {
+        const compRes = await fetch('/api/ai/english-lab', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'compare_retry',
+            question: promptText,
+            attempt1: attempt1Answer,
+            attempt2: answer,
+          }),
+        });
+
+        if (compRes.ok) {
+          const compData = await compRes.json();
+          setRetryComparison(compData.comparison);
+          setShowComparisonModal(true);
+
+          // Update weakness profile with retry resolution
+          if (selectedModule.id === 'grammar') {
+            PersonalWeaknessTracker.markResolved('tense-errors');
+            PersonalWeaknessTracker.markResolved('subject-verb-agreement');
+          } else if (selectedModule.id === 'conciseness' || selectedModule.id === 'filler-elimination') {
+            PersonalWeaknessTracker.markResolved('filler-words');
+            PersonalWeaknessTracker.markResolved('rambling-answers');
+          }
+        }
+      }
+
+      // 2. Perform Standard Turn Evaluation (produces the 6 required items)
+      const evalRes = await fetch('/api/ai/english-lab', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'evaluate',
+          category: selectedModule.id,
+          question: promptText,
+          userAnswer: answer,
+        }),
+      });
+
+      if (!evalRes.ok) {
+        throw new Error(`Evaluation failed with status ${evalRes.status}`);
+      }
+
+      const evalData = await evalRes.json();
+      const evaluation: LabTurnEvaluation = evalData.evaluation;
+      setCurrentEvaluation(evaluation);
+
+      // Record evidence into Personal Weakness Tracker
+      if (evaluation.identifiedWeaknesses && evaluation.identifiedWeaknesses.length > 0) {
+        for (const item of evaluation.identifiedWeaknesses) {
+          PersonalWeaknessTracker.recordObservation(item.category, {
+            verbatimExcerpt: item.verbatimExcerpt,
+            sourceType: item.category === 'filler-words' ? 'transcript' : 'ai-suggestion',
+            sessionRef: sessionRef.current,
+            contextSentence: answer.slice(0, 100),
+          });
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to evaluate answer. Please try again.';
+      console.error('Submission Error:', err);
+      setErrorMsg(msg);
+    } finally {
+      setIsEvaluating(false);
+    }
+  };
+
+  // Trigger Retry Mode for the current question
+  const handleStartRetry = (question: string, attempt1: string) => {
+    setIsRetryMode(true);
+    setAttempt1Answer(attempt1);
+    setUserAnswerInput('');
+    setIsTimerRunning(false);
+
+    // Scroll to input smoothly
+    window.scrollTo({ top: 300, behavior: 'smooth' });
+  };
 
   return (
-    <div className="space-y-6">
-      {/* Module Selector */}
-      <div className="bg-white dark:bg-[#0F172A] border border-slate-200 dark:border-[#1E293B] rounded-2xl p-4 shadow-sm space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-              English Lab Practice Focus
-            </h2>
-            <p className="text-xs text-slate-600 dark:text-slate-300">
-              Targeted drills designed to sharpen grammar precision, expand vocabulary, and eliminate vocal fillers.
-            </p>
+    <div className="space-y-6 max-w-6xl mx-auto pb-12">
+      {/* Top Header & Tab Navigation */}
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/30">
+              Phase 5: Coaching Lab
+            </span>
+            <span className="text-xs text-slate-400">Verbatim Evidence • Retry Loop</span>
           </div>
-          <span className="text-[11px] font-medium px-2.5 py-1 rounded-full bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-900/40">
-            Target: {selectedModule.targetFocus}
-          </span>
+          <h1 className="text-xl font-bold text-slate-100 tracking-tight mt-1">
+            English Lab & Personalized Coaching
+          </h1>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
-          {labModules.map((mod) => (
-            <button
-              key={mod.id}
-              type="button"
-              onClick={() => setSelectedModule(mod)}
-              className={`text-left p-3 rounded-xl border text-xs font-medium transition-all ${
-                selectedModule.id === mod.id
-                  ? 'bg-violet-50/80 dark:bg-violet-950/40 border-violet-500 text-violet-700 dark:text-violet-300 ring-1 ring-violet-500'
-                  : 'bg-slate-50 dark:bg-[#161F30] border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-slate-300 dark:hover:border-slate-700'
-              }`}
-            >
-              <div className="font-bold truncate">{mod.title.split(':')[0]}</div>
-              <div className="text-[11px] text-slate-400 truncate mt-0.5">{mod.subtitle}</div>
-            </button>
-          ))}
+        {/* Tab Switcher: Practice Drills vs Weakness Tracker Profile */}
+        <div className="flex items-center p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+          <button
+            type="button"
+            onClick={() => setActiveTab('practice')}
+            className={`px-4 py-1.5 rounded-lg font-semibold transition-all ${
+              activeTab === 'practice'
+                ? 'bg-violet-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Practice Drills
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('profile')}
+            className={`px-4 py-1.5 rounded-lg font-semibold transition-all ${
+              activeTab === 'profile'
+                ? 'bg-violet-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Weakness Tracker Profile
+          </button>
         </div>
       </div>
 
-      {/* Main Conversation Room for English Lab */}
-      <ConversationRoom
-        key={selectedModule.id}
-        mode="english-lab"
-        modeTitle={selectedModule.title}
-        modeBadge="English Lab"
-        initialQuestion={selectedModule.drillQuestion}
-        scenarioDetails={{
-          topic: selectedModule.targetFocus,
-          objective: selectedModule.objective,
-          difficulty: 'Intermediate / Advanced',
-        }}
-      />
+      {/* VIEW 1: PRACTICE DRILLS */}
+      {activeTab === 'practice' && (
+        <div className="space-y-6">
+          {/* Module Selector Chips */}
+          <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                Choose Practice Focus
+              </span>
+              <span className="text-[11px] font-medium text-violet-400">
+                Current: {selectedModule.badge}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+              {LAB_MODULES.map((mod) => (
+                <button
+                  key={mod.id}
+                  type="button"
+                  onClick={() => handleSelectModule(mod)}
+                  className={`text-left p-2.5 rounded-xl border text-xs transition-all ${
+                    selectedModule.id === mod.id
+                      ? 'bg-violet-950/40 border-violet-500 text-violet-200 ring-1 ring-violet-500'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="font-bold truncate">{mod.title}</div>
+                  <div className="text-[10px] text-slate-500 truncate mt-0.5">{mod.subtitle}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Drill Arena Card */}
+          <div className="p-6 rounded-3xl bg-slate-900 border border-slate-800 shadow-xl space-y-5">
+            {/* Prompt Header */}
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">
+                    {selectedModule.title}
+                  </span>
+                  {isRetryMode && (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                      <RotateCcwIcon size={10} />
+                      Retry Mode (Attempt 2)
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => speakResponse(promptText)}
+                  className="flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                >
+                  <Volume2Icon size={14} />
+                  Hear Prompt
+                </button>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950/90 border border-slate-800/80">
+                <p className="text-sm font-medium text-slate-100 leading-relaxed">
+                  {promptText}
+                </p>
+                <div className="mt-2 pt-2 border-t border-slate-800/60 flex items-center justify-between text-xs text-slate-400">
+                  <span>💡 Focus: {selectedModule.focusHint}</span>
+                  {isRetryMode && (
+                    <button
+                      type="button"
+                      onClick={() => setIsRetryMode(false)}
+                      className="text-[11px] text-slate-500 hover:text-slate-300 underline"
+                    >
+                      Cancel Retry
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 60-Second Challenge Timer (when timed) */}
+            {selectedModule.isTimed && (
+              <OneMinuteChallengeTimer
+                durationSeconds={selectedModule.timerDuration || 60}
+                isRunning={isTimerRunning}
+                onToggleRunning={(running) => setIsTimerRunning(running)}
+                onTimeUp={() => {
+                  setIsTimerRunning(false);
+                  if (isListening) stopListening();
+                }}
+              />
+            )}
+
+            {/* Speaking / Input Controls */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-300">
+                  {isRetryMode ? 'Your Attempt 2 Response:' : 'Your Spoken Response:'}
+                </span>
+                <span className="text-[11px] font-mono text-slate-400">
+                  {userAnswerInput.trim().split(/\s+/).filter(Boolean).length} words
+                </span>
+              </div>
+
+              <div className="relative">
+                <textarea
+                  rows={4}
+                  value={userAnswerInput}
+                  onChange={(e) => setUserAnswerInput(e.target.value)}
+                  placeholder={
+                    isSpeechRecognitionSupported
+                      ? 'Click the microphone button to speak your answer, or type directly here...'
+                      : 'Type your answer here...'
+                  }
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 font-sans leading-relaxed resize-none"
+                />
+
+                {isListening && (
+                  <div className="absolute top-3 right-3 flex items-center gap-2 px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-[11px] font-semibold text-rose-300 animate-pulse">
+                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                    Listening...
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons: Voice Mic + Submit */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex items-center gap-2">
+                  {isSpeechRecognitionSupported ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isListening) {
+                          stopListening();
+                        } else {
+                          startListening();
+                          if (selectedModule.isTimed && !isTimerRunning) {
+                            setIsTimerRunning(true);
+                          }
+                        }
+                      }}
+                      className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                        isListening
+                          ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                      }`}
+                    >
+                      {isListening ? <MicOffIcon size={16} /> : <MicIcon size={16} />}
+                      {isListening ? 'Stop Recording' : 'Speak Your Answer'}
+                    </button>
+                  ) : (
+                    <span className="text-[11px] text-slate-500">
+                      (Browser speech recognition unavailable — text input enabled)
+                    </span>
+                  )}
+
+                  {userAnswerInput && (
+                    <button
+                      type="button"
+                      onClick={() => setUserAnswerInput('')}
+                      className="px-3 py-2 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSubmitAnswer}
+                  disabled={isEvaluating || !userAnswerInput.trim()}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold bg-violet-600 hover:bg-violet-500 text-white shadow-lg shadow-violet-600/30 disabled:opacity-40 disabled:pointer-events-none transition-all"
+                >
+                  {isEvaluating ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                      Evaluating Answer...
+                    </>
+                  ) : isRetryMode ? (
+                    'Submit Attempt 2 & Compare'
+                  ) : (
+                    'Review & Get 6-Point Feedback →'
+                  )}
+                </button>
+              </div>
+
+              {errorMsg && (
+                <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-900/50 text-xs text-rose-300">
+                  {errorMsg}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 6-Item Feedback Card */}
+          {currentEvaluation && (
+            <div className="animate-fade-in">
+              <LabFeedbackCard
+                evaluation={currentEvaluation}
+                onRetryQuestion={handleStartRetry}
+                isRetrying={isRetryMode}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* VIEW 2: PERSONAL WEAKNESS TRACKER & PERSISTENT PROFILE */}
+      {activeTab === 'profile' && (
+        <div className="animate-fade-in">
+          <WeaknessTrackerPanel onSelectAdaptiveDrill={handleSelectAdaptiveDrill} />
+        </div>
+      )}
+
+      {/* Attempt Comparison Modal (Side-by-Side Attempt 1 vs Attempt 2) */}
+      {showComparisonModal && retryComparison && (
+        <AttemptComparisonModal
+          question={promptText}
+          comparison={retryComparison}
+          onClose={() => setShowComparisonModal(false)}
+          onRetryAgain={() => {
+            setShowComparisonModal(false);
+            setUserAnswerInput('');
+          }}
+        />
+      )}
     </div>
   );
 }
