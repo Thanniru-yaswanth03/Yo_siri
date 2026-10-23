@@ -35,6 +35,8 @@ interface ISpeechRecognition {
   stop(): void;
   abort(): void;
   onstart: (() => void) | null;
+  onspeechstart?: (() => void) | null;
+  onspeechend?: (() => void) | null;
   onresult: ((event: ISpeechRecognitionEvent) => void) | null;
   onerror: ((event: ISpeechRecognitionErrorEvent) => void) | null;
   onend: (() => void) | null;
@@ -104,9 +106,18 @@ export async function requestMicrophoneAccess(): Promise<{ granted: boolean; err
   }
 }
 
+export interface LiveTranscriptResult {
+  finalizedText: string;
+  interimText: string;
+  fullTranscript: string;
+  isFinal: boolean;
+}
+
 export interface SpeechRecognizerHandlers {
   onStart: () => void;
-  onTranscript: (transcript: string, isFinal: boolean) => void;
+  onSpeechStart?: () => void;
+  onSpeechEnd?: () => void;
+  onTranscript: (result: LiveTranscriptResult) => void;
   onError: (type: SpeechRecognitionErrorType, message: string) => void;
   onEnd: () => void;
 }
@@ -158,7 +169,8 @@ export class BrowserSpeechRecognizer {
 
       this.recognition = new SpeechRecognitionClass();
 
-      this.recognition.continuous = false;
+      // Enable continuous listening so pauses do not prematurely cut off the speaker
+      this.recognition.continuous = true;
       this.recognition.interimResults = true;
       this.recognition.maxAlternatives = 1;
       this.recognition.lang = this.lang;
@@ -168,22 +180,44 @@ export class BrowserSpeechRecognizer {
         handlers.onStart();
       };
 
-      this.recognition.onresult = (event: ISpeechRecognitionEvent) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
+      this.recognition.onspeechstart = () => {
+        handlers.onSpeechStart?.();
+      };
 
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
+      this.recognition.onspeechend = () => {
+        handlers.onSpeechEnd?.();
+      };
+
+      this.recognition.onresult = (event: ISpeechRecognitionEvent) => {
+        let finalizedAccumulator = '';
+        let interimAccumulator = '';
+
+        for (let i = 0; i < event.results.length; ++i) {
           const item = event.results[i];
+          const segmentText = item[0]?.transcript || '';
           if (item.isFinal) {
-            finalTranscript += item[0].transcript;
+            finalizedAccumulator = finalizedAccumulator
+              ? `${finalizedAccumulator.trim()} ${segmentText.trim()}`
+              : segmentText.trim();
           } else {
-            interimTranscript += item[0].transcript;
+            interimAccumulator = interimAccumulator
+              ? `${interimAccumulator.trim()} ${segmentText.trim()}`
+              : segmentText.trim();
           }
         }
 
-        const currentText = finalTranscript || interimTranscript;
-        const isFinal = Boolean(finalTranscript);
-        handlers.onTranscript(currentText, isFinal);
+        const fullTranscript = interimAccumulator
+          ? (finalizedAccumulator ? `${finalizedAccumulator} ${interimAccumulator}` : interimAccumulator)
+          : finalizedAccumulator;
+
+        const isFinal = Boolean(interimAccumulator.length === 0 && finalizedAccumulator.length > 0);
+
+        handlers.onTranscript({
+          finalizedText: finalizedAccumulator,
+          interimText: interimAccumulator,
+          fullTranscript,
+          isFinal,
+        });
       };
 
       this.recognition.onerror = (event: ISpeechRecognitionErrorEvent) => {

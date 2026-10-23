@@ -9,6 +9,7 @@ import {
   INTERVIEW_CATEGORIES,
 } from '@/lib/interview';
 import { useVoiceEngine } from '@/hooks/useVoiceEngine';
+import { PersonalWeaknessTracker } from '@/lib/english-lab/weakness-tracker';
 import {
   MicIcon,
   PlayIcon,
@@ -59,7 +60,9 @@ export function InterviewSession({ config, onEndSession, onRestart }: InterviewS
     resumeSpeech,
     interrupt,
     cancelSession,
-    transcript: liveTranscript,
+    finalizedTranscript,
+    interimTranscript,
+    isSpeakingDetected,
     error: voiceError,
     retry,
     isSpeechRecognitionSupported,
@@ -195,6 +198,16 @@ export function InterviewSession({ config, onEndSession, onRestart }: InterviewS
 
       const data = await res.json();
       if (data.report) {
+        if (data.report.topImprovementAreas && Array.isArray(data.report.topImprovementAreas)) {
+          data.report.topImprovementAreas.forEach((area: string) => {
+            PersonalWeaknessTracker.recordObservation('weak-structure', {
+              verbatimExcerpt: `Interview: ${config.targetRole}`,
+              sourceType: 'ai-suggestion',
+              sessionRef: `interview-${config.category}`,
+              contextSentence: area,
+            });
+          });
+        }
         onEndSession(data.report);
       }
     } catch (err: unknown) {
@@ -230,6 +243,16 @@ export function InterviewSession({ config, onEndSession, onRestart }: InterviewS
       evalResult = await evaluateAnswer(questionText, candidateAnswer, currentQuestionNumber);
       if (evalResult) {
         setLastTurnEvaluation(evalResult);
+        if (evalResult.keyWeaknesses && evalResult.keyWeaknesses.length > 0) {
+          evalResult.keyWeaknesses.forEach((kw) => {
+            PersonalWeaknessTracker.recordObservation('weak-structure', {
+              verbatimExcerpt: candidateAnswer.slice(0, 100),
+              sourceType: 'transcript',
+              sessionRef: `interview-${config.category}`,
+              contextSentence: `${evalResult?.explanation || ''} — ${kw}`,
+            });
+          });
+        }
       }
     }
 
@@ -521,40 +544,44 @@ export function InterviewSession({ config, onEndSession, onRestart }: InterviewS
               type="button"
               onClick={handleOrbClick}
               disabled={isSubmittingTurn || isGeneratingNextQuestion || isFinalizingReport}
-              className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg cursor-pointer ${
+              className={`min-h-[56px] min-w-[56px] w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-300 shadow-md cursor-pointer ${
                 isListening
-                  ? 'bg-rose-500 hover:bg-rose-600 text-white animate-pulse shadow-rose-500/40 ring-8 ring-rose-500/20 scale-105'
+                  ? 'bg-[#D87558] hover:bg-[#C56346] text-white ring-4 ring-[#D87558]/20 scale-105'
                   : conversationState === 'error'
-                  ? 'bg-amber-500 hover:bg-amber-600 text-white'
-                  : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-500/30 hover:scale-105'
+                  ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                  : 'bg-[#244C3B] hover:bg-[#1B3B2E] dark:bg-[#467D60] dark:hover:bg-[#589676] text-white hover:scale-105'
               }`}
               aria-label={isListening ? 'Stop listening' : 'Start speaking'}
             >
               {isListening ? (
-                <SquareIcon size={26} />
+                <SquareIcon size={24} />
               ) : conversationState === 'error' ? (
-                <RotateCcwIcon size={26} />
+                <RotateCcwIcon size={24} />
               ) : (
-                <MicIcon size={26} />
+                <MicIcon size={24} />
               )}
             </button>
 
             <div className="text-center">
-              <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
+              <span className="text-xs font-semibold text-[var(--text-primary)] block">
                 {isListening
-                  ? 'Listening... Speak your answer now'
+                  ? isSpeakingDetected
+                    ? 'Transcribing your words live...'
+                    : 'Listening... Speak your answer'
                   : conversationState === 'error'
                   ? 'Microphone issue. Tap to retry or use text input below.'
                   : 'Tap microphone to speak your answer'}
               </span>
-              <span className="text-[11px] text-slate-400 block mt-0.5">
-                {isRecSupported ? 'Speech Recognition Active' : 'Text input mode (Speech Recognition unsupported)'}
+              <span className="text-[11px] text-[var(--text-muted)] block mt-0.5">
+                {isRecSupported ? 'Speech Recognition Active' : 'Text input mode'}
               </span>
             </div>
 
-            {isListening && liveTranscript && (
-              <div className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-xs text-indigo-700 dark:text-indigo-300 max-w-md text-center italic">
-                Hearing: &ldquo;{liveTranscript}&rdquo;
+            {isListening && (
+              <div className="px-4 py-2 rounded-xl bg-[#E8EFE9]/60 dark:bg-[#25382B]/40 border border-[#78947B]/30 text-xs text-[var(--text-primary)] max-w-md text-center leading-relaxed">
+                {finalizedTranscript && <span className="font-medium text-[var(--text-primary)]">{finalizedTranscript} </span>}
+                {interimTranscript && <span className="italic text-[#78947B] dark:text-[#8CA890]">{interimTranscript}...</span>}
+                {!finalizedTranscript && !interimTranscript && <span className="text-[var(--text-muted)] italic">Listening for speech...</span>}
               </div>
             )}
 

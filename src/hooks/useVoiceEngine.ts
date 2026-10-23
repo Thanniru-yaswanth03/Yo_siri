@@ -18,12 +18,17 @@ import {
 
 interface UseVoiceEngineOptions {
   onTranscriptComplete?: (finalText: string) => void;
+  onTranscriptChange?: (liveText: string, isFinal: boolean) => void;
   defaultRate?: number;
 }
 
 export function useVoiceEngine(options?: UseVoiceEngineOptions) {
   const [conversationState, setConversationState] = useState<ConversationState>('idle');
   const [transcript, setTranscript] = useState<string>('');
+  const [finalizedTranscript, setFinalizedTranscript] = useState<string>('');
+  const [interimTranscript, setInterimTranscript] = useState<string>('');
+  const [isSpeakingDetected, setIsSpeakingDetected] = useState<boolean>(false);
+  const [isUserEdited, setIsUserEdited] = useState<boolean>(false);
   const [isFinalTranscript, setIsFinalTranscript] = useState<boolean>(false);
   const [error, setError] = useState<VoiceEngineError | null>(null);
   const [permission, setPermission] = useState<'prompt' | 'granted' | 'denied' | 'unsupported'>('prompt');
@@ -34,10 +39,12 @@ export function useVoiceEngine(options?: UseVoiceEngineOptions) {
   const [speechRate, setSpeechRateState] = useState<number>(options?.defaultRate || 1.0);
   const [autoSpeak, setAutoSpeakState] = useState<boolean>(true);
 
-  // References to singletons
+  // References
   const recognizerRef = useRef<BrowserSpeechRecognizer | null>(null);
   const synthesizerRef = useRef<BrowserSpeechSynthesizer | null>(null);
   const optionsRef = useRef(options);
+  const isUserEditedRef = useRef(false);
+  const latestFullTranscriptRef = useRef('');
 
   useEffect(() => {
     optionsRef.current = options;
@@ -217,18 +224,38 @@ export function useVoiceEngine(options?: UseVoiceEngineOptions) {
 
     setPermission('granted');
 
+    // Reset live transcript state for fresh recording unless already edited
+    if (!isUserEditedRef.current) {
+      setFinalizedTranscript('');
+      setInterimTranscript('');
+      setTranscript('');
+      latestFullTranscriptRef.current = '';
+    }
+
     const started = recognizerRef.current?.start({
       onStart: () => {
+        setIsSpeakingDetected(false);
         dispatch({ type: 'RECOGNITION_STARTED' });
       },
-      onTranscript: (liveText, isFinal) => {
-        setTranscript(liveText);
-        setIsFinalTranscript(isFinal);
-        if (isFinal && liveText.trim()) {
-          optionsRef.current?.onTranscriptComplete?.(liveText.trim());
+      onSpeechStart: () => {
+        setIsSpeakingDetected(true);
+      },
+      onSpeechEnd: () => {
+        setIsSpeakingDetected(false);
+      },
+      onTranscript: (result) => {
+        setFinalizedTranscript(result.finalizedText);
+        setInterimTranscript(result.interimText);
+        setIsFinalTranscript(result.isFinal);
+        latestFullTranscriptRef.current = result.fullTranscript;
+
+        if (!isUserEditedRef.current) {
+          setTranscript(result.fullTranscript);
+          optionsRef.current?.onTranscriptChange?.(result.fullTranscript, result.isFinal);
         }
       },
       onError: (errType, message) => {
+        setIsSpeakingDetected(false);
         reportError({
           type: errType,
           message,
@@ -237,7 +264,12 @@ export function useVoiceEngine(options?: UseVoiceEngineOptions) {
         });
       },
       onEnd: () => {
+        setIsSpeakingDetected(false);
         setConversationState((current) => (current === 'listening' ? 'idle' : current));
+        const committedText = latestFullTranscriptRef.current.trim();
+        if (committedText && !isUserEditedRef.current) {
+          optionsRef.current?.onTranscriptComplete?.(committedText);
+        }
       },
     });
 
@@ -253,8 +285,34 @@ export function useVoiceEngine(options?: UseVoiceEngineOptions) {
   // Stop Listening
   const stopListening = useCallback(() => {
     recognizerRef.current?.stop();
+    setIsSpeakingDetected(false);
     dispatch({ type: 'STOP_LISTENING' });
   }, [dispatch]);
+
+  // Handle manual transcript editing by user
+  const handleSetTranscript = useCallback((text: string) => {
+    setTranscript(text);
+    isUserEditedRef.current = true;
+    setIsUserEdited(true);
+    latestFullTranscriptRef.current = text;
+  }, []);
+
+  // Clear all transcript buffers
+  const clearTranscript = useCallback(() => {
+    setTranscript('');
+    setFinalizedTranscript('');
+    setInterimTranscript('');
+    setIsSpeakingDetected(false);
+    setIsUserEdited(false);
+    isUserEditedRef.current = false;
+    latestFullTranscriptRef.current = '';
+  }, []);
+
+  // Reset user-edited flag for a new recording turn
+  const resetUserEdit = useCallback(() => {
+    setIsUserEdited(false);
+    isUserEditedRef.current = false;
+  }, []);
 
   // Speak AI Response
   const speakResponse = useCallback(
@@ -313,6 +371,7 @@ export function useVoiceEngine(options?: UseVoiceEngineOptions) {
     if (recognizerRef.current?.isListening()) {
       recognizerRef.current.abort();
     }
+    setIsSpeakingDetected(false);
     dispatch({ type: 'INTERRUPT' });
   }, [dispatch]);
 
@@ -321,6 +380,12 @@ export function useVoiceEngine(options?: UseVoiceEngineOptions) {
     synthesizerRef.current?.cancel();
     recognizerRef.current?.abort();
     setTranscript('');
+    setFinalizedTranscript('');
+    setInterimTranscript('');
+    setIsSpeakingDetected(false);
+    setIsUserEdited(false);
+    isUserEditedRef.current = false;
+    latestFullTranscriptRef.current = '';
     setError(null);
     dispatch({ type: 'RESET' });
   }, [dispatch]);
@@ -334,9 +399,18 @@ export function useVoiceEngine(options?: UseVoiceEngineOptions) {
   return {
     state: conversationState,
     stateLabel: getStateLabel(conversationState),
+    // Live Word-by-word transcription states
     transcript,
-    setTranscript,
+    finalizedTranscript,
+    interimTranscript,
+    isSpeakingDetected,
+    isUserEdited,
     isFinalTranscript,
+    // Transcript Actions
+    setTranscript: handleSetTranscript,
+    clearTranscript,
+    resetUserEdit,
+    // Error & Permissions
     error,
     clearError,
     permission,
