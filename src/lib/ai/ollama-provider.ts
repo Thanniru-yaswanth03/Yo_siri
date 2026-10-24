@@ -7,6 +7,7 @@ import {
 } from './types';
 import { buildSystemPrompt } from './prompts';
 import { TurnFeedback } from '@/types';
+import { assessAnswerQuality, verifyEvidenceExists } from '@/lib/evaluation';
 
 export const DEFAULT_OLLAMA_ENDPOINT = 'http://127.0.0.1:11434';
 export const DEFAULT_MODEL_NAME = 'llama3.2:1b';
@@ -328,8 +329,8 @@ export class OllamaProvider implements AIProvider {
         const content = responseData.message?.content?.trim() || '';
         const latencyMs = Date.now() - startTime;
 
-        // 4. Output Validation & Parsing
-        const parsed = this.parseModelOutput(content);
+        // 4. Output Validation & Parsing with Evidence Verification
+        const parsed = this.parseModelOutput(content, lastUserMessage.content);
 
         return {
           spokenResponse: parsed.spokenResponse,
@@ -378,19 +379,33 @@ export class OllamaProvider implements AIProvider {
   }
 
   /**
-   * Resilient JSON parsing that handles backticks, trailing text, or malformed outputs
+   * Resilient JSON parsing that verifies evidence and enforces quality bounds
    */
-  private parseModelOutput(rawText: string): {
+  private parseModelOutput(
+    rawText: string,
+    userText: string = ''
+  ): {
     spokenResponse: string;
     coaching: TurnFeedback;
   } {
+    const quality = assessAnswerQuality('conversation turn', userText);
+
+    // Compute honest baseline clarity score from quality assessment
+    const honestClarityFallback = quality.status === 'valid'
+      ? Math.max(70, quality.clarityScore * 10)
+      : Math.max(10, quality.clarityScore * 10);
+
     if (!rawText) {
       return {
-        spokenResponse: "I'm listening. Could you please share a bit more detail on that?",
+        spokenResponse: quality.status === 'valid'
+          ? "I'm listening. Could you please share a bit more detail on that?"
+          : "I couldn't catch that clearly. Could you say that again in a full sentence?",
         coaching: {
-          clarityScore: 75,
-          pacingNote: 'Awaiting longer speech sample',
-          fluencyTip: 'Speak in full, connected sentences to practice conversational rhythm.',
+          clarityScore: honestClarityFallback,
+          pacingNote: quality.status === 'valid' ? 'Conversational cadence' : 'Awaiting intelligible speech',
+          fluencyTip: quality.status === 'valid'
+            ? 'Speak in full, connected sentences to practice conversational rhythm.'
+            : 'Try answering with a complete sentence describing your thoughts.',
           grammar: [],
           vocabulary: [],
         },
@@ -421,19 +436,33 @@ export class OllamaProvider implements AIProvider {
 
         const rawCoaching = parsed.coaching || {};
 
+        let clarityScore =
+          typeof rawCoaching.clarityScore === 'number'
+            ? Math.max(0, Math.min(100, Math.round(rawCoaching.clarityScore)))
+            : honestClarityFallback;
+
+        // Apply strict quality gate bounds to prevent hallucinated high scores
+        if (quality.status === 'empty' || quality.status === 'nonsensical') {
+          clarityScore = Math.min(15, clarityScore);
+        } else if (quality.status === 'refusal') {
+          clarityScore = Math.min(25, clarityScore);
+        } else if (quality.status === 'keyword_stuffing' || quality.status === 'unsupported_claims') {
+          clarityScore = Math.min(35, clarityScore);
+        } else if (quality.status === 'insufficient') {
+          clarityScore = Math.min(45, clarityScore);
+        }
+
         const coaching: TurnFeedback = {
-          clarityScore:
-            typeof rawCoaching.clarityScore === 'number'
-              ? Math.max(1, Math.min(100, Math.round(rawCoaching.clarityScore)))
-              : 85,
+          clarityScore,
           pacingNote:
             typeof rawCoaching.pacingNote === 'string'
               ? rawCoaching.pacingNote
-              : 'Conversational cadence',
+              : quality.status === 'valid' ? 'Conversational cadence' : 'Incomplete delivery',
           fluencyTip:
             typeof rawCoaching.fluencyTip === 'string'
               ? rawCoaching.fluencyTip
               : 'Keep up a steady rhythm with natural breathing between thoughts.',
+          // Filter grammar mistakes to ensure the cited mistake actually exists in the user's input
           grammar: Array.isArray(rawCoaching.grammar)
             ? (rawCoaching.grammar as Array<{ original?: unknown; corrected?: unknown; explanation?: unknown }>)
                 .filter(
@@ -445,7 +474,8 @@ export class OllamaProvider implements AIProvider {
                     g.original !== g.corrected &&
                     !g.original.toLowerCase().includes('part of user') &&
                     !g.original.toLowerCase().includes('mistake') &&
-                    !g.corrected.toLowerCase().includes('corrected version')
+                    !g.corrected.toLowerCase().includes('corrected version') &&
+                    (!userText || verifyEvidenceExists(String(g.original), userText))
                 )
                 .map((g) => ({
                   original: String(g.original).trim(),
@@ -453,6 +483,7 @@ export class OllamaProvider implements AIProvider {
                   explanation: String(g.explanation || 'Refined grammatical accuracy'),
                 }))
             : [],
+          // Filter vocabulary upgrades to ensure the cited word actually exists in the user's input
           vocabulary: Array.isArray(rawCoaching.vocabulary)
             ? (rawCoaching.vocabulary as Array<{ original?: unknown; upgrade?: unknown; reason?: unknown }>)
                 .filter(
@@ -463,7 +494,8 @@ export class OllamaProvider implements AIProvider {
                     v.original.trim().length > 0 &&
                     v.original !== v.upgrade &&
                     !v.original.toLowerCase().includes('word or phrase') &&
-                    !v.upgrade.toLowerCase().includes('alternative')
+                    !v.upgrade.toLowerCase().includes('alternative') &&
+                    (!userText || verifyEvidenceExists(String(v.original), userText))
                 )
                 .map((v) => ({
                   original: String(v.original).trim(),
@@ -475,16 +507,16 @@ export class OllamaProvider implements AIProvider {
 
         return { spokenResponse, coaching };
       } catch {
-        // Fallback to text parsing
+        // Fallback to text parsing below
       }
     }
 
-    // Fallback: If output wasn't valid JSON, use the raw text as the conversational response
+    // Fallback if model output was not valid JSON
     return {
-      spokenResponse: cleaned,
+      spokenResponse: cleaned || "I'm listening. Could you elaborate on your thoughts?",
       coaching: {
-        clarityScore: 82,
-        pacingNote: 'Live spoken dialogue',
+        clarityScore: honestClarityFallback,
+        pacingNote: quality.status === 'valid' ? 'Live spoken dialogue' : 'Awaiting clear input',
         fluencyTip: 'Maintain steady pacing and articulate your key takeaways first.',
         grammar: [],
         vocabulary: [],

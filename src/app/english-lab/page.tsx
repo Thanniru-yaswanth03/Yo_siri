@@ -17,6 +17,7 @@ import {
 } from '@/components/english-lab';
 import { MicIcon, MicOffIcon, Volume2Icon, RotateCcwIcon } from '@/components/icons';
 import { AppStorage } from '@/lib/storage';
+import { assessAnswerQuality } from '@/lib/evaluation';
 
 interface LabModuleConfig {
   id: LabCategory;
@@ -264,6 +265,10 @@ export default function EnglishLabPage() {
         }
       }
 
+      const quality = assessAnswerQuality(promptText, answer);
+      const honestStructureScore = Math.max(0, Math.min(100, quality.structureScore * 10));
+      const honestRelevanceScore = Math.max(0, Math.min(100, quality.relevanceScore * 10));
+
       // Save practice session to IndexedDB
       AppStorage.saveSession({
         id: `session-lab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -292,8 +297,8 @@ export default function EnglishLabPage() {
               upgrade: v.upgradeWord,
               reason: v.reason,
             })),
-            structureScore: 88,
-            relevanceScore: 92,
+            structureScore: honestStructureScore,
+            relevanceScore: honestRelevanceScore,
           },
         ],
         metadata: {

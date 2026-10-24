@@ -13,6 +13,7 @@ import {
   VocabularyUpgradeItem,
   WeaknessCategory,
 } from './types';
+import { assessAnswerQuality, verifyEvidenceExists } from '@/lib/evaluation';
 
 // Common verbal fillers to scan deterministically in spoken transcripts
 const COMMON_FILLERS: string[] = [
@@ -143,6 +144,7 @@ export function parseLabTurnEvaluation(
   category: LabCategory
 ): LabTurnEvaluation {
   const cleanAnswer = originalAnswer.trim();
+  const quality = assessAnswerQuality(question, cleanAnswer);
   const fillerAnalysis = scanTranscriptFillers(cleanAnswer);
   const conciseness = analyzeConciseness(cleanAnswer);
 
@@ -159,27 +161,49 @@ export function parseLabTurnEvaluation(
   }
 
   // Fallback defaults if LLM didn't return complete JSON
-  const fallbackCorrected = parsed?.correctedVersion || cleanAnswer;
-  const fallbackMistakes: GrammarMistakeItem[] = Array.isArray(parsed?.mainMistakes)
-    ? parsed.mainMistakes.map((m) => ({
-        originalSegment: String(m.originalSegment || ''),
-        correctedSegment: String(m.correctedSegment || ''),
-        explanation: String(m.explanation || 'Refine for grammatical accuracy.'),
-        isStylisticPreference: Boolean(m.isStylisticPreference),
-      }))
+  const fallbackCorrected =
+    quality.status === 'valid'
+      ? parsed?.correctedVersion || cleanAnswer
+      : cleanAnswer.length > 0
+      ? cleanAnswer
+      : 'Please provide an answer to practice.';
+
+  // Filter grammar mistakes to only keep items with verifiable excerpts
+  const fallbackMistakes: GrammarMistakeItem[] = quality.status === 'valid' && Array.isArray(parsed?.mainMistakes)
+    ? parsed.mainMistakes
+        .filter((m) => m && m.originalSegment && verifyEvidenceExists(String(m.originalSegment), cleanAnswer))
+        .map((m) => ({
+          originalSegment: String(m.originalSegment || ''),
+          correctedSegment: String(m.correctedSegment || ''),
+          explanation: String(m.explanation || 'Refine for grammatical accuracy.'),
+          isStylisticPreference: Boolean(m.isStylisticPreference),
+        }))
     : [];
 
-  const fallbackExplanation =
-    parsed?.clearExplanation ||
-    (fallbackMistakes.length > 0
-      ? `Identified ${fallbackMistakes.length} area(s) for grammatical refinement while preserving your intended meaning.`
-      : 'Your answer is grammatically sound, well-structured, and communicates your message clearly.');
+  let fallbackExplanation = '';
+  if (quality.status === 'empty' || quality.status === 'nonsensical') {
+    fallbackExplanation = 'No intelligible answer was provided. Speak or type a clear, complete sentence to evaluate grammar and clarity.';
+  } else if (quality.status === 'refusal') {
+    fallbackExplanation = 'You indicated lack of knowledge or declined to answer. Practice responding by explaining your thought process or what you know.';
+  } else if (quality.status === 'irrelevant') {
+    fallbackExplanation = 'The response was off-topic and did not answer the prompt. Focus on answering the specific prompt asked.';
+  } else if (quality.status === 'insufficient') {
+    fallbackExplanation = 'The answer was too brief to evaluate sentence variety or grammatical structure. Aim for a complete sentence with detail.';
+  } else {
+    fallbackExplanation =
+      parsed?.clearExplanation ||
+      (fallbackMistakes.length > 0
+        ? `Identified ${fallbackMistakes.length} area(s) for grammatical refinement while preserving your intended meaning.`
+        : 'Your answer is grammatically sound, well-structured, and communicates your message clearly.');
+  }
 
   const fallbackAlternative =
-    parsed?.naturalAlternative ||
-    (cleanAnswer.length > 0
-      ? `In conversation, you could naturally say: "${cleanAnswer}"`
-      : 'A natural, confident response.');
+    quality.status === 'valid'
+      ? parsed?.naturalAlternative ||
+        (cleanAnswer.length > 0
+          ? `In conversation, you could naturally say: "${cleanAnswer}"`
+          : 'A natural, confident response.')
+      : 'A direct, natural response answering the prompt clearly.';
 
   const fallbackExercise = parsed?.shortPracticeExercise && typeof parsed.shortPracticeExercise === 'object'
     ? {
@@ -193,12 +217,15 @@ export function parseLabTurnEvaluation(
         hint: 'Keep your sentences crisp and avoid rushing.',
       };
 
-  const vocabularyUpgrades: VocabularyUpgradeItem[] = Array.isArray(parsed?.vocabularyUpgrades)
-    ? parsed.vocabularyUpgrades.map((v) => ({
-        originalWord: String(v.originalWord || ''),
-        upgradeWord: String(v.upgradeWord || ''),
-        reason: String(v.reason || 'Enhances impact and professional tone.'),
-      }))
+  // Filter vocabulary upgrades to only keep words actually present in user answer
+  const vocabularyUpgrades: VocabularyUpgradeItem[] = quality.status === 'valid' && Array.isArray(parsed?.vocabularyUpgrades)
+    ? parsed.vocabularyUpgrades
+        .filter((v) => v && v.originalWord && verifyEvidenceExists(String(v.originalWord), cleanAnswer))
+        .map((v) => ({
+          originalWord: String(v.originalWord || ''),
+          upgradeWord: String(v.upgradeWord || ''),
+          reason: String(v.reason || 'Enhances impact and professional tone.'),
+        }))
     : [];
 
   // Categorize identified weaknesses from LLM and transcript evidence

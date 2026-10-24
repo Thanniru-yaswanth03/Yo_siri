@@ -47,9 +47,10 @@ export function RoleplayCoachingReportView({
         turnIndex: idx + 1,
         userAnswer: t.content,
         grammarMistakes: report.grammarMistakes,
-        fillerWords: report.fillerWordOccurrences,
         relevanceScore: report.overallScore,
-        structureScore: report.objectiveAchieved ? 90 : 75,
+        structureScore: report.objectiveAchieved
+          ? Math.max(65, Math.min(95, report.overallScore))
+          : Math.min(35, report.overallScore),
       })),
       metadata: {
         scenarioId: report.scenarioId,

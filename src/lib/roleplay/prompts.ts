@@ -4,6 +4,7 @@
 
 import { RoleplayScenario, RoleplayCoachingReport, RoleplayTurn } from './types';
 import { scanTranscriptFillers } from '@/lib/english-lab';
+import { assessAnswerQuality, verifyEvidenceExists } from '@/lib/evaluation';
 
 export function buildRoleplayActorPrompt(scenario: RoleplayScenario): string {
   return `You are roleplaying as: ${scenario.aiPersona} (${scenario.aiRoleDescription})
@@ -102,11 +103,35 @@ export function parseRoleplayCoachingReport(
   turns: RoleplayTurn[]
 ): RoleplayCoachingReport {
   // Aggregate user text for transcript filler analysis
-  const userText = turns
-    .filter((t) => t.role === 'user')
-    .map((t) => t.content)
-    .join(' ');
+  const userTurns = turns.filter((t) => t.role === 'user');
+  const userText = userTurns.map((t) => t.content).join(' ');
   const fillerAnalysis = scanTranscriptFillers(userText);
+
+  // Assess quality of user turns against the dialogue context
+  let validTurns = 0;
+  let totalRelevance = 0;
+  for (let i = 0; i < turns.length; i++) {
+    const turn = turns[i];
+    if (turn.role !== 'user') continue;
+
+    // Find preceding assistant turn if available, else openingLine
+    let promptText = scenario.openingLine || scenario.objective;
+    for (let j = i - 1; j >= 0; j--) {
+      if (turns[j].role === 'assistant') {
+        promptText = turns[j].content;
+        break;
+      }
+    }
+
+    const q = assessAnswerQuality(promptText, turn.content);
+    if (q.status === 'valid' || q.status === 'partially_relevant') {
+      validTurns++;
+      totalRelevance += q.relevanceScore;
+    }
+  }
+
+  const averageRelevance = userTurns.length > 0 ? totalRelevance / userTurns.length : 0;
+  const isEssentiallyGarbage = userTurns.length === 0 || validTurns === 0;
 
   let parsed: RawRoleplayCoaching | null = null;
   try {
@@ -119,47 +144,69 @@ export function parseRoleplayCoachingReport(
   }
 
   const objectiveAchieved =
-    typeof parsed?.objectiveAchieved === 'boolean'
+    isEssentiallyGarbage
+      ? false
+      : typeof parsed?.objectiveAchieved === 'boolean'
       ? parsed.objectiveAchieved
-      : turns.length >= 3;
+      : validTurns >= 2 && averageRelevance >= 6;
 
-  const overallScore =
-    typeof parsed?.overallScore === 'number'
-      ? Math.max(50, Math.min(100, Math.round(parsed.overallScore)))
-      : 84;
+  let overallScore = 0;
+  if (isEssentiallyGarbage) {
+    overallScore = userTurns.length === 0 ? 0 : Math.min(20, Math.round(averageRelevance * 10));
+  } else if (typeof parsed?.overallScore === 'number') {
+    overallScore = Math.max(0, Math.min(100, Math.round(parsed.overallScore)));
+  } else {
+    overallScore = Math.round(averageRelevance * 10);
+  }
 
   const coachingSummary =
-    parsed?.coachingSummary ||
-    `You completed the "${scenario.title}" scenario with ${scenario.aiPersona}. Your responses demonstrated clear engagement with the scenario objective while maintaining a professional presence.`;
+    isEssentiallyGarbage
+      ? `The roleplay session concluded without intelligible or relevant contributions from the user. Practice answering the scenario prompts in complete, relevant sentences.`
+      : parsed?.coachingSummary ||
+        `You completed the "${scenario.title}" scenario with ${scenario.aiPersona}. Your responses demonstrated engagement with the scenario objective while maintaining a professional presence.`;
 
-  const keyStrengths: string[] = Array.isArray(parsed?.keyStrengths) && parsed.keyStrengths.length > 0
+  const keyStrengths: string[] = isEssentiallyGarbage
+    ? [
+        'No demonstrated strengths in this session.',
+        'Responses lacked intelligible engagement or relevant substance for this workplace simulation.',
+      ]
+    : Array.isArray(parsed?.keyStrengths) && parsed.keyStrengths.length > 0
     ? parsed.keyStrengths.map(String)
     : [
-        'Maintained composure and engaged directly with the persona’s prompt.',
-        'Spoke with clear intent and professional vocabulary.',
+        'Engaged directly with the persona’s prompt in the simulation.',
+        'Spoke with clear intent and professional tone.',
       ];
 
-  const growthOpportunities: string[] = Array.isArray(parsed?.growthOpportunities) && parsed.growthOpportunities.length > 0
+  const growthOpportunities: string[] = isEssentiallyGarbage
+    ? [
+        'Review the scenario setting and deliver complete, relevant answers addressing the stakeholder.',
+        'Practice stating a clear headline and supporting rationale.',
+      ]
+    : Array.isArray(parsed?.growthOpportunities) && parsed.growthOpportunities.length > 0
     ? parsed.growthOpportunities.map(String)
     : [
-        'Incorporate more specific metrics or concrete examples to back up high-level assertions.',
+        'Incorporate more specific metrics or concrete examples to back up assertions.',
         'Use the "Agree & Pivot" technique to validate stakeholder concerns before presenting counterarguments.',
       ];
 
   const diplomacyAndToneNotes =
-    parsed?.diplomacyAndToneNotes ||
-    'Your tone remained respectful and collaborative throughout the scenario. Continuing to balance confidence with curiosity will elevate your executive presence.';
+    isEssentiallyGarbage
+      ? 'Awaiting relevant spoken dialogue to evaluate diplomacy and tone.'
+      : parsed?.diplomacyAndToneNotes ||
+        'Your tone remained respectful and collaborative throughout the scenario. Continuing to balance confidence with curiosity will elevate your executive presence.';
 
   const grammarMistakes: Array<{
     original: string;
     corrected: string;
     explanation: string;
   }> = Array.isArray(parsed?.grammarMistakes)
-    ? parsed.grammarMistakes.map((m) => ({
-        original: String(m.original || ''),
-        corrected: String(m.corrected || ''),
-        explanation: String(m.explanation || 'Refine for grammatical precision.'),
-      }))
+    ? parsed.grammarMistakes
+        .filter((m) => m && m.original && (!userText || verifyEvidenceExists(String(m.original), userText)))
+        .map((m) => ({
+          original: String(m.original || ''),
+          corrected: String(m.corrected || ''),
+          explanation: String(m.explanation || 'Refine for grammatical precision.'),
+        }))
     : [];
 
   const recommendedNextPhrases: Array<{
@@ -170,7 +217,7 @@ export function parseRoleplayCoachingReport(
         phrase: String(p.phrase || ''),
         context: String(p.context || ''),
       }))
-    : scenario.suggestedPhrases.map((phrase) => ({
+    : (scenario.suggestedPhrases || []).map((phrase) => ({
         phrase,
         context: 'Use this conversational anchor to drive clarity and rapport.',
       }));

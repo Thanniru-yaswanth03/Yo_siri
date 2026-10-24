@@ -564,8 +564,8 @@ export class AppStorage {
       practiceStreakDays: streakDays,
       commonGrammarMistakes,
       topFillerWords,
-      averageStructureScore: scoreCount > 0 ? Math.round(totalStructureScore / scoreCount) : 85,
-      averageRelevanceScore: scoreCount > 0 ? Math.round(totalRelevanceScore / scoreCount) : 88,
+      averageStructureScore: scoreCount > 0 ? Math.round(totalStructureScore / scoreCount) : 0,
+      averageRelevanceScore: scoreCount > 0 ? Math.round(totalRelevanceScore / scoreCount) : 0,
       retryImprovementsCount,
       recommendedExercises,
     };

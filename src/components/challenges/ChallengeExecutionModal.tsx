@@ -7,6 +7,7 @@ import { AppStorage, StoredSession } from '@/lib/storage';
 import { OneMinuteChallengeTimer } from '@/components/english-lab';
 import { MicIcon, MicOffIcon, Volume2Icon } from '@/components/icons';
 import { scanTranscriptFillers, analyzeConciseness } from '@/lib/english-lab';
+import { assessAnswerQuality } from '@/lib/evaluation';
 
 interface ChallengeExecutionModalProps {
   challenge: DailyChallengeDefinition;
@@ -63,11 +64,16 @@ export function ChallengeExecutionModal({
 
     const elapsedSeconds = Math.max(10, Math.round((Date.now() - startTimeRef.current) / 1000));
     const cleanAnswer = userInput.trim();
+    const quality = assessAnswerQuality(challenge.promptQuestion, cleanAnswer);
     const fillers = scanTranscriptFillers(cleanAnswer);
     const conciseness = analyzeConciseness(cleanAnswer);
 
     // Call English Lab API for grammar and evaluation
-    let feedbackText = 'Well articulated! You completed the challenge within the recommended time window.';
+    let feedbackText =
+      quality.status === 'valid'
+        ? 'Well articulated! You completed the challenge within the recommended time window.'
+        : quality.diagnosticExplanation;
+
     try {
       const res = await fetch('/api/ai/english-lab', {
         method: 'POST',
@@ -91,6 +97,11 @@ export function ChallengeExecutionModal({
     }
 
     const todayStr = new Date().toISOString().split('T')[0];
+
+    // Compute honest scores bounded by quality gate
+    const honestClarity = Math.max(0, Math.min(100, quality.clarityScore * 10));
+    const honestRelevance = Math.max(0, Math.min(100, quality.relevanceScore * 10));
+    const honestStructure = Math.max(0, Math.min(100, quality.structureScore * 10));
 
     // 1. Record Challenge Completion in IndexedDB
     await AppStorage.saveChallengeCompletion({
@@ -121,9 +132,9 @@ export function ChallengeExecutionModal({
           question: challenge.promptQuestion,
           userAnswer: cleanAnswer,
           fillerWords: fillers.fillers.map((f) => ({ word: f.word, count: f.count })),
-          clarityScore: 90,
-          relevanceScore: 92,
-          structureScore: 88,
+          clarityScore: honestClarity,
+          relevanceScore: honestRelevance,
+          structureScore: honestStructure,
         },
       ],
       metadata: {

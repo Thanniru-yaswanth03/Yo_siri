@@ -7,6 +7,7 @@ import {
   TurnEvaluation,
   InterviewSessionReport,
   INTERVIEW_CATEGORIES,
+  parseModelEvaluation,
 } from '@/lib/interview';
 import { useVoiceEngine } from '@/hooks/useVoiceEngine';
 import { PersonalWeaknessTracker } from '@/lib/english-lab/weakness-tracker';
@@ -121,11 +122,13 @@ export function InterviewSession({ config, onEndSession, onRestart }: InterviewS
         }),
       });
 
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data.evaluation || null;
+      if (res.ok) {
+        const data = await res.json();
+        if (data.evaluation) return data.evaluation;
+      }
+      return parseModelEvaluation('', config, turnIndex, question, answer);
     } catch {
-      return null;
+      return parseModelEvaluation('', config, turnIndex, question, answer);
     }
   };
 
